@@ -1,3 +1,4 @@
+// ty-hei/rag/RAG-a5f2999dcbcb56fd0b4be65925d4f800bb62e21e/sidepanel.tsx
 // sidepanel.tsx
 
 import React, { useState, useEffect } from "react"
@@ -21,6 +22,24 @@ function SidePanel() {
   const [editablePlan, setEditablePlan] = useState<ResearchPlan | null>(null)
   const [selectedArticles, setSelectedArticles] = useState<Set<string>>(new Set())
   const [validationError, setValidationError] = useState<string | null>(null)
+
+  // 【核心变更】添加消息监听器，以便在后台更新状态时强制刷新UI
+  useEffect(() => {
+    const handleMessage = (message: any) => {
+      if (message.type === "STATE_UPDATED_FROM_BACKGROUND") {
+        console.log("Received state update notification from background. Rehydrating store...")
+        // 强制Zustand从chrome.storage重新加载状态
+        useStore.persist.rehydrate()
+      }
+    }
+
+    chrome.runtime.onMessage.addListener(handleMessage)
+    
+    // 在组件卸载时移除监听器，防止内存泄漏
+    return () => {
+      chrome.runtime.onMessage.removeListener(handleMessage)
+    }
+  }, []) // 空依赖数组确保此effect仅在组件挂载时运行一次
 
   useEffect(() => {
     if (globalPlan) {
@@ -49,8 +68,6 @@ function SidePanel() {
   }
 
   const handleConfirmPlan = () => {
-    // 在发送消息前，应该先进入加载状态，以提供更快的UI反馈
-    // useStore.getState().setLoading(true); // 这是一个可以优化的点，但当前逻辑在background中处理
     setResearchPlan(editablePlan)
     chrome.runtime.sendMessage({ type: "EXECUTE_SEARCH", plan: editablePlan })
   }
@@ -177,7 +194,6 @@ function SidePanel() {
                 disabled={loading || selectedArticles.size === 0} 
                 style={{...styles.button, ...((loading || selectedArticles.size === 0) ? styles.buttonDisabled : {})}}
               >
-                {/* 修正：移除不可能的 stage === 'SYNTHESIZING' 判断 */}
                 {loading ? '正在生成...' : `获取全文并生成报告 (${selectedArticles.size})`}
               </button>
             </div>
@@ -197,7 +213,6 @@ function SidePanel() {
                 <p style={styles.clarification}>{editablePlan?.clarification}</p>
               </div>
               <button onClick={handleConfirmPlan} disabled={loading} style={{...styles.button, ...(loading ? styles.buttonDisabled : {})}}>
-                 {/* 修正：移除冗余的 stage === 'SCREENING' 判断 */}
                  {loading ? "正在检索..." : "确认计划，开始检索"}
               </button>
             </div>;
