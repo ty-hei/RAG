@@ -36,8 +36,7 @@
     "permissions": [
       "storage",
       "tabs",
-      "scripting",
-      "side_panel"
+      "scripting"
     ],
     "side_panel": {
       "default_path": "sidepanel.html"

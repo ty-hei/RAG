@@ -6,7 +6,9 @@ export interface LLMConfig {
   provider: 'gemini' | 'openai';
   apiKey: string;
   apiEndpoint?: string;
-  model: string;
+  // 更新：区分快速和增强模型
+  fastModel: string;
+  smartModel: string;
   fetchRateLimit: number;
 }
 

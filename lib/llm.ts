@@ -2,17 +2,17 @@
 
 import type { LLMConfig } from "./types";
 
-// 新增一个参数来指定期望的响应格式
-export async function callLlm(prompt: string, config: LLMConfig, responseType: 'json' | 'text' = 'json'): Promise<string> {
+// 更新：新增 modelName 参数，以明确指定要使用的模型
+export async function callLlm(prompt: string, config: LLMConfig, modelName: string, responseType: 'json' | 'text' = 'json'): Promise<string> {
   if (config.provider === 'gemini') {
-    return callGemini(prompt, config, responseType);
+    return callGemini(prompt, config, modelName, responseType);
   } else {
-    return callOpenAI(prompt, config, responseType);
+    return callOpenAI(prompt, config, modelName, responseType);
   }
 }
 
-async function callGemini(prompt: string, config: LLMConfig, responseType: 'json' | 'text'): Promise<string> {
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=${config.apiKey}`;
+async function callGemini(prompt: string, config: LLMConfig, modelName: string, responseType: 'json' | 'text'): Promise<string> {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${config.apiKey}`;
   
   // 根据期望的响应类型动态设置 generationConfig
   const generationConfig = responseType === 'json' ? { responseMimeType: "application/json" } : {};
@@ -40,13 +40,13 @@ async function callGemini(prompt: string, config: LLMConfig, responseType: 'json
   return data.candidates[0].content.parts[0].text;
 }
 
-async function callOpenAI(prompt: string, config: LLMConfig, responseType: 'json' | 'text'): Promise<string> {
+async function callOpenAI(prompt: string, config: LLMConfig, modelName: string, responseType: 'json' | 'text'): Promise<string> {
   // 如果未提供，则默认为官方OpenAI端点
   const apiEndpoint = config.apiEndpoint || 'https://api.openai.com/v1/chat/completions';
 
   // 动态设置 response_format
   const body = {
-    model: config.model,
+    model: modelName,
     messages: [{ role: 'user', content: prompt }],
     ...(responseType === 'json' && { response_format: { type: "json_object" } })
   };
