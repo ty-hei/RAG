@@ -4,7 +4,7 @@ import React, { useState, useEffect, useMemo } from "react"
 import { useStore } from "./lib/store"
 import type { ResearchPlan, ScoredArticle, SubQuestion, ResearchSession } from "./lib/types"
 
-// 【新增】一个简单的Markdown渲染组件，仅支持一些基本元素
+// ... SimpleMarkdownViewer 和 SessionManager 组件保持不变 ...
 function SimpleMarkdownViewer({ content }: { content: string }) {
   const [copyStatus, setCopyStatus] = useState('复制报告');
 
@@ -18,7 +18,6 @@ function SimpleMarkdownViewer({ content }: { content: string }) {
   };
 
   const renderContent = () => {
-    // 简单的渲染逻辑，将**text**变为<strong>text</strong>等
     const htmlContent = content
       .replace(/\n/g, '<br />')
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
@@ -36,8 +35,6 @@ function SimpleMarkdownViewer({ content }: { content: string }) {
     </div>
   );
 }
-
-
 function SessionManager() {
   const { sessions, activeSessionId, switchSession, addSession } = useStore()
   
@@ -70,6 +67,7 @@ function SessionManager() {
     </div>
   )
 }
+
 
 function SidePanel() {
   const { addSession, updateActiveSession, resetActiveSession, deleteSession } = useStore()
@@ -180,22 +178,40 @@ function SidePanel() {
     });
   };
 
-  // 【核心变更】修改此函数以发送生成报告的消息
-  const handleGenerateReport = () => {
+  // 【修改】此函数现在仅用于启动全文抓取流程
+  const handleStartGathering = () => {
     if (!activeSession) return;
     const articlesToProcess = activeSession.scoredAbstracts.filter(a => selectedArticles.has(a.pmid));
     if (articlesToProcess.length === 0) {
       alert("请至少选择一篇文章。");
       return;
     }
-    console.log("Requesting to generate report for these articles:", articlesToProcess);
-    // 发送消息到后台开始第三阶段
     chrome.runtime.sendMessage({
-      type: "GENERATE_REPORT",
+      type: "START_GATHERING",
       sessionId: activeSession.id,
       articles: articlesToProcess
     });
   };
+  
+  // 【新增】处理 "抓取当前页面" 按钮的函数
+  const handleScrapeClick = (pmid: string) => {
+    if (!activeSession) return;
+    chrome.runtime.sendMessage({
+      type: 'SCRAPE_ACTIVE_TAB',
+      sessionId: activeSession.id,
+      pmid: pmid
+    });
+  }
+
+  // 【新增】处理 "生成最终报告" 按钮的函数
+  const handleSynthesizeClick = () => {
+    if (!activeSession) return;
+     chrome.runtime.sendMessage({
+      type: 'SYNTHESIZE_REPORT',
+      sessionId: activeSession.id,
+    });
+  }
+
 
   const renderInitialView = () => (
     <div>
@@ -257,13 +273,68 @@ function SidePanel() {
             </div>
           ))}
         </div>
-        <button onClick={handleGenerateReport} disabled={selectedArticles.size === 0 || activeSession?.loading} style={{...styles.button, ...((selectedArticles.size === 0 || activeSession?.loading) ? styles.buttonDisabled : {})}}>
-          {activeSession?.loading ? '...' : `获取全文并生成报告 (${selectedArticles.size})`}
+        <button onClick={handleStartGathering} disabled={selectedArticles.size === 0 || activeSession?.loading} style={{...styles.button, ...((selectedArticles.size === 0 || activeSession?.loading) ? styles.buttonDisabled : {})}}>
+          {`开始全文抓取 (${selectedArticles.size})`}
         </button>
     </div>
   );
 
-  // 【新增】用于渲染最终报告的视图
+  // 【新增】渲染全文抓取阶段的UI
+  const renderFullTextGatheringView = (session: ResearchSession) => {
+    const totalToFetch = session.articlesToFetch.length;
+    const fetchedCount = session.fullTexts.length;
+    const isDoneGathering = totalToFetch > 0 && fetchedCount === totalToFetch;
+    const currentArticle = isDoneGathering ? null : session.articlesToFetch[fetchedCount];
+
+    return (
+      <div>
+        <h3>全文抓取 ({fetchedCount}/{totalToFetch})</h3>
+        {isDoneGathering ? (
+          <div style={styles.successBox}>
+            <p>太棒了！所有文章全文已抓取完毕。</p>
+            <button onClick={handleSynthesizeClick} disabled={session.loading} style={{...styles.button, ...(session.loading ? styles.buttonDisabled : {})}}>
+              {session.loading ? 'AI正在撰写...' : '生成最终报告'}
+            </button>
+          </div>
+        ) : (
+          currentArticle && (
+            <div>
+              <p style={styles.description}>请按以下步骤操作，抓取下一篇文章的全文：</p>
+              <div style={styles.planCard}>
+                <p><strong>待抓取:</strong> {currentArticle.title} (PMID: {currentArticle.pmid})</p>
+                <ol style={{paddingLeft: '20px'}}>
+                  <li>点击下方按钮，在新标签页中打开文章的PubMed页面。</li>
+                  <li>在打开的页面中，通过DOI或其他链接，**手动导航**到文章全文页面。</li>
+                  <li>确认全文加载完毕后，回到本侧边栏，点击“抓取当前页面”按钮。</li>
+                </ol>
+                <button 
+                  onClick={() => chrome.tabs.create({ url: `https://pubmed.ncbi.nlm.nih.gov/${currentArticle.pmid}/`})} 
+                  style={styles.buttonSecondary}
+                >
+                  1. 打开PubMed页面
+                </button>
+                <button 
+                  onClick={() => handleScrapeClick(currentArticle.pmid)} 
+                  disabled={session.loading} 
+                  style={{...styles.button, ...(session.loading ? styles.buttonDisabled : {}), marginLeft: '10px'}}
+                >
+                  {session.loading ? '抓取中...' : '2. 抓取当前页面'}
+                </button>
+              </div>
+            </div>
+          )
+        )}
+        <hr style={{border: 'none', borderTop: '1px solid #eee', margin: '20px 0'}}/>
+        <h4>已抓取列表:</h4>
+        <ul style={{fontSize: '12px', paddingLeft: '20px'}}>
+          {session.fullTexts.map(ft => (
+            <li key={ft.pmid}>PMID: {ft.pmid} (✓)</li>
+          ))}
+        </ul>
+      </div>
+    );
+  };
+
   const renderFinalReport = (session: ResearchSession) => (
     <div>
         <h3>研究综述报告</h3>
@@ -277,8 +348,8 @@ function SidePanel() {
     if (!activeSession) return renderInitialView();
     const { stage, loading, error, researchPlan, scoredAbstracts, finalReport } = activeSession;
     if (error) return (<div style={styles.errorBox}><h4>发生错误</h4><p>{error}</p><button onClick={resetActiveSession} style={styles.button}>重试</button></div>);
-    if (loading && !isRefining) {
-      const messages: {[key: string]: string} = {PLANNING: "AI正在为您规划研究方向...", SCREENING: "正在检索PubMed并让AI评估摘要，请稍候...", SYNTHESIZING: "正在抓取全文并撰写报告，这可能需要几分钟..."}
+    if (loading && stage !== 'GATHERING') {
+      const messages: {[key: string]: string} = {PLANNING: "AI正在为您规划研究方向...", SCREENING: "正在检索PubMed并让AI评估摘要...", SYNTHESIZING: "AI正在阅读全文并撰写报告，这可能需要几分钟..."}
       return (<div style={styles.loadingBox}><p>{messages[stage] || "AI 正在工作中..."}</p></div>);
     }
     switch (stage) {
@@ -286,14 +357,13 @@ function SidePanel() {
       case 'PLANNING':
         return renderInitialView();
       case 'SCREENING':
-        if (scoredAbstracts && scoredAbstracts.length > 0) { return renderScreeningResults(scoredAbstracts); }
-        return researchPlan ? renderResearchPlan(researchPlan) : renderInitialView();
-      // 【核心变更】处理 SYNTHESIZING 和 DONE 阶段
+        return scoredAbstracts.length > 0 ? renderScreeningResults(scoredAbstracts) : renderResearchPlan(researchPlan!);
+      case 'GATHERING':
+        return renderFullTextGatheringView(activeSession);
       case 'SYNTHESIZING':
-         return (<div style={styles.loadingBox}><p>正在抓取全文并撰写报告，这可能需要几分钟...</p></div>);
+         return (<div style={styles.loadingBox}><p>AI正在阅读全文并撰写报告，这可能需要几分钟...</p></div>);
       case 'DONE':
-        if (finalReport) return renderFinalReport(activeSession);
-        return (<div style={styles.errorBox}><p>报告生成完毕，但内容为空。</p><button onClick={resetActiveSession} style={styles.button}>重试</button></div>);
+        return finalReport ? renderFinalReport(activeSession) : (<div style={styles.errorBox}><p>报告生成完毕，但内容为空。</p><button onClick={resetActiveSession} style={styles.button}>重试</button></div>);
       default:
         return <p>未知阶段: {stage}</p>;
     }
@@ -324,12 +394,13 @@ const styles: { [key: string]: React.CSSProperties } = {
   textarea: { width: '100%', minHeight: '80px', boxSizing: 'border-box', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', marginTop: '5px' },
   textareaSmall: { width: '100%', minHeight: '50px', boxSizing: 'border-box', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', marginTop: '5px' },
   input: { width: '100%', boxSizing: 'border-box', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', marginTop: '5px' },
-  button: { width: '100%', padding: '10px 15px', marginTop: '10px', backgroundColor: "#007bff", color: "white", border: "none", borderRadius: 5, cursor: "pointer", fontSize: 16, transition: 'background-color 0.2s' },
+  button: { width: 'auto', padding: '10px 15px', marginTop: '10px', backgroundColor: "#007bff", color: "white", border: "none", borderRadius: 5, cursor: "pointer", fontSize: 16, transition: 'background-color 0.2s' },
   buttonSecondary: { width: 'auto', padding: '8px 15px', marginTop: '10px', backgroundColor: "#e9ecef", color: "#212529", border: "1px solid #ced4da", borderRadius: 5, cursor: "pointer", fontSize: 14 },
   buttonDisabled: { backgroundColor: "#aaa", cursor: "not-allowed" },
   inputError: { border: '1px solid red' },
   errorText: { color: 'red', fontSize: '13px', marginTop: '5px' },
   errorBox: { padding: '15px', backgroundColor: '#ffebee', border: '1px solid #ef5350', borderRadius: '5px', color: '#c62828' },
+  successBox: { padding: '15px', backgroundColor: '#e8f5e9', border: '1px solid #66bb6a', borderRadius: '5px', color: '#2e7d32' },
   loadingBox: { textAlign: 'center', padding: '40px 20px', color: '#555' },
   planCard: { position: 'relative', border: '1px solid #e0e0e0', padding: '15px', margin: '15px 0', borderRadius: '8px', backgroundColor: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' },
   deleteButton: { position: 'absolute', top: '5px', right: '5px', background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#aaa', padding: '0 5px', lineHeight: '1' },
@@ -342,7 +413,6 @@ const styles: { [key: string]: React.CSSProperties } = {
   articleMeta: { margin: '5px 0', fontSize: '12px', color: '#333' },
   articleDetails: { marginTop: '8px', fontSize: '12px' },
   articleAbstract: { margin: '5px 0', paddingLeft: '10px', borderLeft: '3px solid #eee', color: '#555', lineHeight: 1.5, whiteSpace: 'pre-wrap' },
-  // 【新增】最终报告的样式
   reportContent: { 
     marginTop: '20px', 
     padding: '15px', 
@@ -350,7 +420,7 @@ const styles: { [key: string]: React.CSSProperties } = {
     borderRadius: '5px',
     border: '1px solid #dee2e6',
     lineHeight: 1.6,
-    whiteSpace: 'pre-wrap', // 保持换行
+    whiteSpace: 'pre-wrap', 
     fontFamily: 'serif',
   },
 };

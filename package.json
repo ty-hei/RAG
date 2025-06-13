@@ -31,8 +31,6 @@
   },
   "manifest": {
     "host_permissions": [
-      "https://*.pubmed.ncbi.nlm.nih.gov/*",
-      "https://generativelanguage.googleapis.com/*",
       "<all_urls>"
     ],
     "permissions": [
@@ -46,10 +44,7 @@
     "web_accessible_resources": [
       {
         "resources": [
-          "scraper.js",
-          "pubmed-scraper.js",
-          "confirmation.js",
-          "Readability.js"
+          "assets/*"
         ],
         "matches": [
           "<all_urls>"
@@ -57,14 +52,20 @@
       }
     ]
   },
-  "pnpm": {
-    "overrides": {
-      "sharp": "^0.34.2"
-    }
-  },
   "plasmo": {
     "build": {
       "filename": "[name].js"
     }
-  }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "contents/scraper.ts"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
 }

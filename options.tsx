@@ -13,8 +13,7 @@ const defaultConfig: LLMConfig = {
   fastModel: "gemini-1.5-flash-latest",
   smartModel: "gemini-1.5-pro-latest",
   fetchRateLimit: 15,
-  // 【新增】默认关闭人工确认
-  manualScrapingConfirmation: false,
+  // 【删除】移除了 manualScrapingConfirmation 默认值
 }
 
 function OptionsPage() {
@@ -24,7 +23,7 @@ function OptionsPage() {
   useEffect(() => {
     const loadConfig = async () => {
       const savedConfig = await storage.get<LLMConfig>("llmConfig")
-      // 【新增】合并加载的配置和默认配置，以确保新字段存在
+      // 合并加载的配置和默认配置，以确保新字段存在
       if (savedConfig) {
         setConfig({ ...defaultConfig, ...savedConfig })
       }
@@ -51,10 +50,9 @@ function OptionsPage() {
     return "保存设置"
   }
 
-  // 【新增】更新 handleConfigChange 以支持复选框
+  // 【修改】简化 handleConfigChange，不再需要处理复选框
   const handleConfigChange = (field: keyof LLMConfig, value: any) => {
-    const isCheckbox = typeof defaultConfig[field] === 'boolean';
-    setConfig((prev) => ({ ...prev, [field]: isCheckbox ? !prev[field] : value }));
+    setConfig((prev) => ({ ...prev, [field]: value }));
   }
 
   return (
@@ -147,22 +145,7 @@ function OptionsPage() {
         </p>
       </div>
       
-      {/* 【新增】人工确认复选框 */}
-      <div style={styles.formGroup}>
-        <label style={{...styles.label, display: 'flex', alignItems: 'center'}}>
-          <input
-            type="checkbox"
-            checked={config.manualScrapingConfirmation}
-            onChange={() => handleConfigChange("manualScrapingConfirmation", null)}
-            style={{ marginRight: '10px' }}
-          />
-          在抓取全文前进行人工确认
-        </label>
-        <p style={styles.fieldDescription}>
-          启用后，插件会逐一在前台打开文章页面，并显示一个操作栏让您确认或跳过，而不是在后台全自动执行。
-        </p>
-      </div>
-
+      {/* 【删除】移除人工确认复选框的整个 div */}
 
       <div style={styles.formGroup}>
         <button

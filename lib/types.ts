@@ -1,7 +1,7 @@
 // RAG-main/lib/types.ts
 
-// 单个研究任务的阶段
-export type Stage = 'IDLE' | 'PLANNING' | 'SCREENING' | 'SYNTHESIZING' | 'DONE';
+// 【修改】调整Stage类型以适应新流程
+export type Stage = 'IDLE' | 'PLANNING' | 'SCREENING' | 'GATHERING' | 'SYNTHESIZING' | 'DONE';
 
 // LLM 配置
 export interface LLMConfig {
@@ -11,12 +11,10 @@ export interface LLMConfig {
   fastModel: string;
   smartModel: string;
   fetchRateLimit: number;
-  // 【新增】是否在抓取前进行人工确认
-  manualScrapingConfirmation: boolean;
 }
 
 export interface SubQuestion {
-  id: string; // 新增：为每个子问题添加唯一ID，便于编辑和删除
+  id: string;
   question: string;
   keywords: string[];
 }
@@ -38,13 +36,17 @@ export interface ScoredArticle extends FetchedArticle {
 }
 
 export interface ResearchSession {
-  id: string; // 唯一ID，例如时间戳
-  name: string; // 会话名称，默认为用户输入的topic
-  createdAt: number; // 创建时间
+  id: string; 
+  name: string; 
+  createdAt: number; 
   stage: Stage;
   topic: string;
   researchPlan: ResearchPlan | null;
   scoredAbstracts: ScoredArticle[];
+  // 【新增】用于存储用户选择要处理的文章
+  articlesToFetch: ScoredArticle[];
+  // 【新增】用于存储已抓取到的全文
+  fullTexts: { pmid: string; text: string }[];
   finalReport: string;
   loading: boolean;
   error: string | null;

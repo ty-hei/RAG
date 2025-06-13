@@ -2790,8 +2790,4 @@ Readability.prototype = {
   },
 };
 
-if (typeof module === "object") {
-  /* eslint-disable-next-line no-redeclare */
-  /* global module */
-  module.exports = Readability;
-}
+export { Readability };

@@ -21,38 +21,31 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   }
 });
 
-// ... 其他消息监听和函数保持不变 ...
 chrome.runtime.onMessage.addListener(async (message) => {
   if (message.type === "START_RESEARCH") {
-    await handleStartResearch(message.topic, message.sessionId)
-  }
-  if (message.type === "REFINE_PLAN") {
+    await handleStartResearch(message.topic, message.sessionId);
+  } else if (message.type === "REFINE_PLAN") {
     await handleRefinePlan(message.sessionId, message.feedback);
-  }
-  if (message.type === "EXECUTE_SEARCH") {
+  } else if (message.type === "EXECUTE_SEARCH") {
     await handleExecuteSearch(message.plan, message.sessionId);
+  } else if (message.type === "START_GATHERING") {
+    await handleStartGathering(message.sessionId, message.articles);
+  } else if (message.type === "SCRAPE_ACTIVE_TAB") {
+    await handleScrapeActiveTab(message.sessionId, message.pmid);
+  } else if (message.type === "SYNTHESIZE_REPORT") {
+    await handleSynthesizeReport(message.sessionId);
   }
-  if (message.type === "GENERATE_REPORT") {
-    await handleGenerateReport(message.sessionId, message.articles);
-  }
-})
+});
+
 const notifySidePanel = (message: any) => {
   chrome.runtime.sendMessage(message).catch((err) => {
     if (err.message.includes("Could not establish connection")) {} else {
       console.error("Error sending message to side panel:", err)
     }
-  })
-}
-const ensureSubQuestionIds = (plan: ResearchPlan) => {
-  const seenIds = new Set<string>();
-  const updatedSubQuestions = plan.subQuestions.map(sq => {
-    let newId = sq.id;
-    if (!newId || seenIds.has(newId)) newId = uuidv4();
-    seenIds.add(newId);
-    return { ...sq, id: newId };
   });
-  return { ...plan, subQuestions: updatedSubQuestions };
-}
+};
+
+// ... 其他 handle 函数保持不变 ...
 async function handleStartResearch(topic: string, sessionId: string) {
   const { updateSessionById } = useStore.getState();
   await useStore.persist.rehydrate();
@@ -154,134 +147,101 @@ async function handleExecuteSearch(plan: ResearchPlan, sessionId: string) {
     notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   }
 }
-
-async function handleGenerateReport(sessionId: string, articles: ScoredArticle[]) {
+function ensureSubQuestionIds(plan: ResearchPlan) {
+  const seenIds = new Set<string>();
+  const updatedSubQuestions = plan.subQuestions.map(sq => {
+    let newId = sq.id;
+    if (!newId || seenIds.has(newId)) newId = uuidv4();
+    seenIds.add(newId);
+    return { ...sq, id: newId };
+  });
+  return { ...plan, subQuestions: updatedSubQuestions };
+}
+async function handleStartGathering(sessionId: string, articles: ScoredArticle[]) {
   const { updateSessionById } = useStore.getState();
   await useStore.persist.rehydrate();
-  updateSessionById(sessionId, { loading: true, stage: "SYNTHESIZING", error: null });
+  updateSessionById(sessionId, {
+    stage: 'GATHERING',
+    articlesToFetch: articles,
+    fullTexts: [],
+    loading: false,
+    error: null,
+  });
+  notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
+}
+
+// 【核心修改】重写此函数，用发消息替代注入
+async function handleScrapeActiveTab(sessionId: string, pmid: string) {
+  const { updateSessionById, getActiveSession } = useStore.getState();
+  await useStore.persist.rehydrate();
+
+  updateSessionById(sessionId, { loading: true, error: null });
   notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   
   try {
-    const storage = new Storage({ area: "local" })
-    const config = await storage.get<LLMConfig>("llmConfig");
-    if (!config?.apiKey) throw new Error("API密钥未配置。");
-
-    const fullTexts: { pmid: string, text: string }[] = [];
-    const rateLimit = (config.fetchRateLimit || 15) * 1000;
-
-    for (const article of articles) {
-      const url = `https://pubmed.ncbi.nlm.nih.gov/${article.pmid}/`;
-      const scrapedText = await scrapeArticleText(url, config.manualScrapingConfirmation);
-
-      if (scrapedText) {
-        fullTexts.push({ pmid: article.pmid, text: scrapedText });
-      }
-      
-      if (articles.indexOf(article) < articles.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, rateLimit)); 
-      }
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tabs[0] || !tabs[0].id) {
+      throw new Error("找不到有效的激活标签页。");
     }
-    
-    if (fullTexts.length === 0) {
-      throw new Error("没有成功抓取到任何文章的全文，无法生成报告。")
+    const tabId = tabs[0].id;
+
+    // 向内容脚本发送抓取指令
+    chrome.tabs.sendMessage(tabId, { type: "DO_SCRAPE" });
+
+    // 等待内容脚本返回结果
+    const scrapedText = await new Promise<string>((resolve, reject) => {
+      const listener = (message: any) => {
+        // 确保消息是我们想要的，因为后台会收到所有消息
+        if (message.type === 'SCRAPED_CONTENT' || message.type === 'SCRAPING_FAILED') {
+          chrome.runtime.onMessage.removeListener(listener);
+          if (message.type === 'SCRAPED_CONTENT') {
+            resolve(message.payload.text);
+          } else {
+            reject(new Error(message.payload.error));
+          }
+        }
+      };
+      chrome.runtime.onMessage.addListener(listener);
+      setTimeout(() => {
+        chrome.runtime.onMessage.removeListener(listener);
+        reject(new Error("抓取超时。内容脚本没有在规定时间内返回信息。"));
+      }, 20000);
+    });
+
+    const session = getActiveSession();
+    if (session) {
+      const newFullTexts = [...session.fullTexts, { pmid, text: scrapedText }];
+      updateSessionById(sessionId, { fullTexts: newFullTexts, loading: false });
     }
 
-    const currentSession = useStore.getState().sessions.find(s => s.id === sessionId);
-    if (!currentSession?.researchPlan) throw new Error("无法找到当前研究计划以生成报告。");
-    
-    const synthesisPrompt = synthesisWriterPrompt(currentSession.researchPlan, fullTexts);
-    const finalReport = await callLlm(synthesisPrompt, config, config.smartModel, "text");
-
-    updateSessionById(sessionId, { finalReport, stage: 'DONE', loading: false });
-
-  } catch(err) {
-    console.error("Error during report generation phase:", err);
+  } catch (err) {
+    console.error(`抓取标签页失败:`, err);
     updateSessionById(sessionId, { error: err.message, loading: false });
   } finally {
     notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   }
 }
 
-async function scrapeArticleText(url: string, isManual: boolean): Promise<string | null> {
-  return new Promise(async (resolve, reject) => {
-    let tabId: number | undefined;
-
-    const cleanup = (listener: any, shouldCloseTab: boolean = true) => {
-      chrome.runtime.onMessage.removeListener(listener);
-      if (tabId && shouldCloseTab) {
-        chrome.tabs.remove(tabId).catch(e => console.log(`Error closing tab ${tabId}: ${e.message}`));
-      }
-    };
-
-    const messageListener = (message: any, sender: chrome.runtime.MessageSender) => {
-      if (sender.tab?.id !== tabId) return;
-
-      if (!isManual) {
-        if (message.type === "SCRAPED_CONTENT") {
-          cleanup(messageListener);
-          resolve(message.payload.text);
-        } else if (message.type === "SCRAPING_FAILED") {
-          cleanup(messageListener);
-          reject(new Error(`Failed to scrape ${url}: ${message.payload.error}`));
-        }
-        return;
-      }
-      
-      switch (message.type) {
-        case 'CONFIRM_SCRAPE':
-          // 【核心修正】注入两个脚本，路径已简化
-          chrome.scripting.executeScript({
-              target: { tabId: tabId! },
-              files: ["Readability.js", "scraper.js"],
-          });
-          break;
-        case 'SCRAPED_CONTENT':
-          cleanup(messageListener);
-          resolve(message.payload.text);
-          break;
-        case 'SKIP_ARTICLE':
-          cleanup(messageListener);
-          resolve(null);
-          break;
-        case 'SCRAPING_FAILED':
-          cleanup(messageListener);
-          reject(new Error(`Failed to scrape ${url}: ${message.payload.error}`));
-          break;
-      }
-    };
-    
-    chrome.runtime.onMessage.addListener(messageListener);
-
-    try {
-      const tab = await chrome.tabs.create({ url, active: isManual });
-      tabId = tab.id;
-
-      const tabUpdateListener = (updatedTabId: number, info: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab) => {
-        if (updatedTabId === tabId && info.status === "complete" && tab.url?.startsWith("http")) {
-          chrome.tabs.onUpdated.removeListener(tabUpdateListener);
-          
-          // 【核心修正】根据模式，注入正确的、路径已简化的脚本
-          const scriptsToInject = isManual 
-            ? ["confirmation.js"] 
-            : ["Readability.js", "scraper.js"];
-          
-          console.log(`Injecting scripts '${scriptsToInject.join(', ')}' into tab ${tabId}`);
-          chrome.scripting.executeScript({
-            target: { tabId: tabId! },
-            files: scriptsToInject,
-          }).catch(err => {
-            const detailedError = `\n>>>>>>>>>> RAG ASSISTANT DEBUG <<<<<<<<<<\nFailed to inject scripts '${scriptsToInject.join(', ')}' into ${tab.url}.\nREASON: ${err.message}\nTROUBLESHOOTING:\n1. Did you run 'pnpm build' after adding/changing the content script file?\n2. Is the file path in 'package.json' under 'web_accessible_resources' correct?\n3. Was the extension reloaded after the build?\nThe tab will remain open for debugging.\n>>>>>>>>>>>>>>>>>>>>>>><<<<<<<<<<<<<<<<<<<`;
-            console.error(detailedError);
-            cleanup(messageListener, false); 
-            reject(new Error(`注入脚本失败: ${scriptsToInject.join(', ')}`));
-          });
-        }
-      };
-      chrome.tabs.onUpdated.addListener(tabUpdateListener);
-
-    } catch (e) {
-      cleanup(messageListener);
-      reject(e);
+async function handleSynthesizeReport(sessionId: string) {
+  const { updateSessionById, getActiveSession } = useStore.getState();
+  await useStore.persist.rehydrate();
+  updateSessionById(sessionId, { stage: 'SYNTHESIZING', loading: true, error: null });
+  notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
+  try {
+    const session = getActiveSession();
+    if (!session || !session.researchPlan || session.fullTexts.length === 0) {
+      throw new Error("无法生成报告：缺少研究计划或未抓取到任何全文。");
     }
-  });
+    const storage = new Storage({ area: "local" });
+    const config = await storage.get<LLMConfig>("llmConfig");
+    if (!config?.apiKey) throw new Error("API密钥未配置。");
+    const synthesisPrompt = synthesisWriterPrompt(session.researchPlan, session.fullTexts);
+    const finalReport = await callLlm(synthesisPrompt, config, config.smartModel, "text");
+    updateSessionById(sessionId, { finalReport, stage: 'DONE', loading: false });
+  } catch (err) {
+    console.error("报告合成阶段发生错误:", err);
+    updateSessionById(sessionId, { error: err.message, loading: false });
+  } finally {
+    notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
+  }
 }

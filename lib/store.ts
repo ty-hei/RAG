@@ -40,6 +40,8 @@ export const useStore = create<AppState>()(
           topic: topic,
           researchPlan: null,
           scoredAbstracts: [],
+          articlesToFetch: [], // 【新增】
+          fullTexts: [],       // 【新增】
           finalReport: "",
           loading: false,
           error: null,
@@ -82,7 +84,6 @@ export const useStore = create<AppState>()(
         }))
       },
       
-      // 【核心变更】实现新的action
       updateSessionById: (sessionId: string, update: Partial<Omit<ResearchSession, 'id' | 'createdAt'>>) => {
         set((state) => ({
           sessions: state.sessions.map((session) =>
@@ -102,6 +103,8 @@ export const useStore = create<AppState>()(
                 stage: "IDLE",
                 researchPlan: null,
                 scoredAbstracts: [],
+                articlesToFetch: [], // 【新增】
+                fullTexts: [],       // 【新增】
                 finalReport: "",
                 loading: false,
                 error: null
