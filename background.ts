@@ -45,28 +45,37 @@ const notifySidePanel = (message: any) => {
   });
 };
 
-// ... 其他 handle 函数保持不变 ...
+// 【核心修正】修复此函数中的状态流转逻辑
 async function handleStartResearch(topic: string, sessionId: string) {
   const { updateSessionById } = useStore.getState();
   await useStore.persist.rehydrate();
   updateSessionById(sessionId, { loading: true, stage: "PLANNING", topic: topic, error: null });
+  notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
+
   try {
     const storage = new Storage({ area: "local" })
     const config = await storage.get<LLMConfig>("llmConfig")
     if (!config?.apiKey) throw new Error("API密钥未配置。请在设置页面中设置。")
+
     const prompt = researchStrategistPrompt(topic)
     const llmResponse = await callLlm(prompt, config, config.fastModel, "json")
     const cleanedResponse = llmResponse.trim().replace(/^```json\s*/, "").replace(/\s*```$/, "")
     let plan: ResearchPlan = JSON.parse(cleanedResponse);
     plan = ensureSubQuestionIds(plan);
-    updateSessionById(sessionId, { researchPlan: plan, stage: "SCREENING", loading: false });
-    notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" })
+
+    // 【修正】: 获取计划后，应停留在PLANNING阶段，并设置loading为false，等待用户确认。
+    // 而不是直接跳转到 SCREENING 阶段。
+    updateSessionById(sessionId, { researchPlan: plan, stage: "PLANNING", loading: false });
+
   } catch (err) {
     const errorMessage = err instanceof SyntaxError ? "无法解析AI模型的返回结果，请稍后重试。" : err.message
     updateSessionById(sessionId, { error: errorMessage, loading: false, stage: "IDLE" });
-    notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" })
+  } finally {
+    // 确保前端总是收到状态更新
+    notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   }
 }
+
 async function handleRefinePlan(sessionId: string, feedback: string) {
   const { updateSessionById } = useStore.getState();
   await useStore.persist.rehydrate();
@@ -76,15 +85,19 @@ async function handleRefinePlan(sessionId: string, feedback: string) {
     return;
   }
   updateSessionById(sessionId, { loading: true, error: null });
+  notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
+  
   try {
     const storage = new Storage({ area: "local" })
     const config = await storage.get<LLMConfig>("llmConfig");
     if (!config?.apiKey) throw new Error("API密钥未配置。请在设置页面中设置。")
+    
     const prompt = refinePlanPrompt(currentSession.topic, currentSession.researchPlan, feedback);
     const llmResponse = await callLlm(prompt, config, config.fastModel, "json");
     const cleanedResponse = llmResponse.trim().replace(/^```json\s*/, "").replace(/\s*```$/, "");
     let refinedPlan: ResearchPlan = JSON.parse(cleanedResponse);
     refinedPlan = ensureSubQuestionIds(refinedPlan);
+    
     updateSessionById(sessionId, { researchPlan: refinedPlan, loading: false });
   } catch (err) {
     const errorMessage = err instanceof SyntaxError ? "无法解析AI模型的返回结果，请稍后重试。" : err.message;
@@ -93,10 +106,13 @@ async function handleRefinePlan(sessionId: string, feedback: string) {
       notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   }
 }
+
 async function handleExecuteSearch(plan: ResearchPlan, sessionId: string) {
   const { updateSessionById } = useStore.getState();
   await useStore.persist.rehydrate();
   updateSessionById(sessionId, { loading: true, stage: "SCREENING", error: null });
+  notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
+
   try {
     const allKeywords = plan.subQuestions.flatMap(sq => sq.keywords).filter(Boolean);
     const uniqueKeywords = [...new Set(allKeywords)];
@@ -140,6 +156,7 @@ async function handleExecuteSearch(plan: ResearchPlan, sessionId: string) {
       const review = reviews.find(r => r.pmid === article.pmid);
       return { ...article, score: review?.score || 0, reason: review?.reason || "AI未提供评估意见。" };
     }).sort((a, b) => b.score - a.score);
+
     updateSessionById(sessionId, { scoredAbstracts, loading: false });
   } catch (err) {
     updateSessionById(sessionId, { error: err.message, loading: false });
@@ -147,6 +164,7 @@ async function handleExecuteSearch(plan: ResearchPlan, sessionId: string) {
     notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   }
 }
+
 function ensureSubQuestionIds(plan: ResearchPlan) {
   const seenIds = new Set<string>();
   const updatedSubQuestions = plan.subQuestions.map(sq => {
@@ -157,6 +175,7 @@ function ensureSubQuestionIds(plan: ResearchPlan) {
   });
   return { ...plan, subQuestions: updatedSubQuestions };
 }
+
 async function handleStartGathering(sessionId: string, articles: ScoredArticle[]) {
   const { updateSessionById } = useStore.getState();
   await useStore.persist.rehydrate();
@@ -170,7 +189,6 @@ async function handleStartGathering(sessionId: string, articles: ScoredArticle[]
   notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
 }
 
-// 【核心修改】重写此函数，用发消息替代注入
 async function handleScrapeActiveTab(sessionId: string, pmid: string) {
   const { updateSessionById, getActiveSession } = useStore.getState();
   await useStore.persist.rehydrate();
@@ -185,13 +203,10 @@ async function handleScrapeActiveTab(sessionId: string, pmid: string) {
     }
     const tabId = tabs[0].id;
 
-    // 向内容脚本发送抓取指令
     chrome.tabs.sendMessage(tabId, { type: "DO_SCRAPE" });
 
-    // 等待内容脚本返回结果
     const scrapedText = await new Promise<string>((resolve, reject) => {
       const listener = (message: any) => {
-        // 确保消息是我们想要的，因为后台会收到所有消息
         if (message.type === 'SCRAPED_CONTENT' || message.type === 'SCRAPING_FAILED') {
           chrome.runtime.onMessage.removeListener(listener);
           if (message.type === 'SCRAPED_CONTENT') {
