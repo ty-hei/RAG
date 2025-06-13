@@ -2,9 +2,10 @@
 
 import React, { useState, useEffect, useMemo } from "react"
 import { useStore } from "./lib/store"
-import type { ResearchPlan, ScoredArticle, SubQuestion, ResearchSession } from "./lib/types"
+import type { ResearchPlan, ScoredArticle, SubQuestion, ResearchSession, Stage } from "./lib/types"
 
-// ... SimpleMarkdownViewer 和 SessionManager 组件保持不变 ...
+// #region --- Helper Components ---
+
 function SimpleMarkdownViewer({ content }: { content: string }) {
   const [copyStatus, setCopyStatus] = useState('复制报告');
 
@@ -28,13 +29,14 @@ function SimpleMarkdownViewer({ content }: { content: string }) {
 
   return (
     <div>
-        <button onClick={handleCopy} style={{...styles.buttonSecondary, width: 'auto', float: 'right'}}>
-            {copyStatus}
-        </button>
-        <div style={styles.reportContent} dangerouslySetInnerHTML={renderContent()} />
+      <button onClick={handleCopy} style={{...styles.buttonSecondary, width: 'auto', float: 'right'}}>
+        {copyStatus}
+      </button>
+      <div style={styles.reportContent} dangerouslySetInnerHTML={renderContent()} />
     </div>
   );
 }
+
 function SessionManager() {
   const { sessions, activeSessionId, switchSession, addSession } = useStore()
   
@@ -68,20 +70,308 @@ function SessionManager() {
   )
 }
 
+const Section: React.FC<{
+  title: string, 
+  stage: Stage,
+  completedStages: Stage[],
+  children: React.ReactNode,
+  isLoading?: boolean,
+  loadingText?: string,
+}> = ({ title, stage, completedStages, children, isLoading = false, loadingText }) => {
+  const isCompleted = completedStages.includes(stage);
+  const [isExpanded, setIsExpanded] = useState(!isCompleted);
 
-function SidePanel() {
-  const { addSession, updateActiveSession, resetActiveSession, deleteSession } = useStore()
+  useEffect(() => {
+    setIsExpanded(!completedStages.includes(stage));
+  }, [stage, completedStages]);
+
+  const headerStyle = isCompleted ? {...styles.sectionHeader, ...styles.sectionHeaderCompleted} : styles.sectionHeader;
+
+  return (
+    <div style={styles.section}>
+      <div style={headerStyle} onClick={() => setIsExpanded(!isExpanded)}>
+        <span>{title}</span>
+        <span>{isCompleted ? '✓ 完成' : (isLoading ? '...' : (isExpanded ? '▼' : '▶'))}</span>
+      </div>
+      {isExpanded && (
+        <div style={styles.sectionContent}>
+          {isLoading ? <div style={styles.loadingBox}><p>{loadingText}</p></div> : children}
+        </div>
+      )}
+    </div>
+  );
+};
+
+
+// #endregion --- Helper Components ---
+
+
+// #region --- Stage Sections ---
+
+const InitialSection: React.FC<{
+  session: ResearchSession | null | undefined,
+  onStart: (topic: string) => void
+}> = ({ session, onStart }) => {
+  const [topic, setTopic] = useState(session?.topic || "");
+  const [validationError, setValidationError] = useState<string|null>(null);
+
+  useEffect(() => {
+    setTopic(session?.topic || "");
+  }, [session?.topic]);
+
+  const handleStartClick = () => {
+    if (!topic.trim()) {
+      setValidationError("请输入一个研究主题。");
+      return;
+    }
+    setValidationError(null);
+    onStart(topic);
+  };
   
-  const { sessions, activeSessionId } = useStore();
-  const activeSession = useMemo(() => sessions.find(s => s.id === activeSessionId), [sessions, activeSessionId]);
+  return (
+    <div style={{padding: '0 15px 15px'}}>
+       <h3>您想研究什么？</h3>
+       <p style={styles.description}>选择一个已有研究，或在下方输入新主题开始。</p>
+       <textarea value={topic} onChange={(e) => { setTopic(e.target.value); if (validationError) setValidationError(null); }} placeholder="例如：肠道菌群与抑郁症的最新研究进展" style={{ ...styles.textarea, ...(validationError ? styles.inputError : {}) }} />
+       {validationError && <p style={styles.errorText}>{validationError}</p>}
+       <button onClick={handleStartClick} disabled={session?.loading} style={{...styles.button, ...(session?.loading ? styles.buttonDisabled : {})}}>
+         {session?.loading ? "正在规划..." : "开始研究 / 更新主题"}
+       </button>
+    </div>
+  );
+}
 
-  const [topic, setTopic] = useState("")
+const ResearchPlanSection: React.FC<{ session: ResearchSession }> = ({ session }) => {
+  const { updateActiveSession } = useStore();
   const [refinementRequest, setRefinementRequest] = useState("");
   const [isRefining, setIsRefining] = useState(false);
-  const [selectedArticles, setSelectedArticles] = useState<Set<string>>(new Set());
-  
-  const [validationError, setValidationError] = useState<string | null>(null)
 
+  useEffect(() => {
+    if (!session.loading) {
+      setIsRefining(false);
+    }
+  }, [session.loading]);
+
+  const addSubQuestion = () => {
+    if (!session?.researchPlan) return;
+    const newSubQuestion: SubQuestion = { id: `sq_manual_${Date.now()}`, question: "新的子问题（请编辑）", keywords: [] };
+    const updatedSubQuestions = [...session.researchPlan.subQuestions, newSubQuestion];
+    updateActiveSession({ researchPlan: { ...session.researchPlan, subQuestions: updatedSubQuestions } });
+  };
+
+  const handleRequestRefinement = () => {
+    if (!refinementRequest.trim()) {
+      alert("请输入您的修改意见。");
+      return;
+    }
+    setIsRefining(true);
+    chrome.runtime.sendMessage({ type: "REFINE_PLAN", sessionId: session.id, feedback: refinementRequest });
+  };
+  
+  const handlePlanChange = (subQuestionId: string, field: 'question' | 'keywords', value: string) => {
+    const newPlan = {
+      ...session.researchPlan!,
+      subQuestions: session.researchPlan!.subQuestions.map(sq => 
+        sq.id === subQuestionId 
+          ? (field === 'keywords' ? { ...sq, keywords: value.split(',').map(k => k.trim()) } : { ...sq, [field]: value }) 
+          : sq
+      )
+    };
+    
+    if (session.stage !== 'PLANNING') {
+      if (window.confirm("修改研究计划将重置后续的文献筛选和报告生成进度，是否继续？")) {
+        updateActiveSession({
+          researchPlan: newPlan,
+          stage: 'SCREENING',
+          loading: true,
+          scoredAbstracts: [],
+          articlesToFetch: [],
+          fullTexts: [],
+          finalReport: '',
+        });
+        chrome.runtime.sendMessage({ type: "EXECUTE_SEARCH", plan: newPlan, sessionId: session.id });
+      }
+    } else {
+      updateActiveSession({ researchPlan: newPlan });
+    }
+  };
+
+  const handleConfirmPlan = () => {
+    if(!session.researchPlan) return;
+    updateActiveSession({ loading: true, stage: 'SCREENING' });
+    chrome.runtime.sendMessage({ type: "EXECUTE_SEARCH", plan: session.researchPlan, sessionId: session.id });
+  };
+  
+  if (!session.researchPlan) return null;
+
+  return (
+    <Section title="第 1 步：研究计划" stage="PLANNING" completedStages={['SCREENING', 'GATHERING', 'SYNTHESIZING', 'DONE']}>
+        <p style={styles.description}>AI为您起草了以下计划。您可以直接编辑，或在下方通过对话让AI帮您修改。</p>
+        <div style={{ marginTop: '15px' }}><label style={styles.label}>AI 提出的澄清问题 (供您参考)</label><p style={styles.clarification}>{session.researchPlan.clarification}</p></div>
+        {session.researchPlan.subQuestions.map((sq) => (
+          <div key={sq.id} style={styles.planCard}>
+            <label style={styles.label}>子问题</label>
+            <textarea value={sq.question} onChange={(e) => handlePlanChange(sq.id, 'question', e.target.value)} style={styles.textareaSmall}/>
+            <label style={{...styles.label, marginTop: '10px'}}>关键词 (逗号分隔)</label>
+            <input type="text" value={sq.keywords.join(', ')} onChange={(e) => handlePlanChange(sq.id, 'keywords', e.target.value)} style={styles.input}/>
+          </div>
+        ))}
+        {/* 【修复】将所有操作按钮重新添加到PLANNING阶段 */}
+        {session.stage === 'PLANNING' && (
+          <>
+            <button onClick={addSubQuestion} style={{...styles.buttonSecondary, marginTop: '10px'}}>+ 手动添加子问题</button>
+            <div style={styles.refinementBox}>
+              <h4 style={styles.label}>与AI对话以优化计划</h4>
+              <textarea value={refinementRequest} onChange={(e) => setRefinementRequest(e.target.value)} placeholder="例如：请合并关于治疗的两个问题。再增加一个关于副作用的子问题。" style={styles.textarea}/>
+              <button onClick={handleRequestRefinement} disabled={isRefining || session.loading} style={{...styles.button, ...( (isRefining || session.loading) ? styles.buttonDisabled : {})}}>
+                  {isRefining ? "正在思考..." : "发送修改意见给AI"}
+              </button>
+            </div>
+            <hr style={{border: 'none', borderTop: '1px solid #eee', margin: '20px 0'}}/>
+            <button onClick={handleConfirmPlan} style={{...styles.button, backgroundColor: '#28a745', width: '100%'}}>
+              计划确认，开始检索文献
+            </button>
+          </>
+        )}
+    </Section>
+  );
+};
+
+const ScreeningResultsSection: React.FC<{ session: ResearchSession }> = ({ session }) => {
+  const { updateActiveSession } = useStore();
+  const [selectedPmids, setSelectedPmids] = useState<Set<string>>(new Set());
+
+  const handleSelectionChange = (pmid: string) => {
+    const newSelection = new Set(selectedPmids);
+    if (newSelection.has(pmid)) newSelection.delete(pmid);
+    else newSelection.add(pmid);
+    setSelectedPmids(newSelection);
+  }
+
+  const handleStartGathering = () => {
+    const articlesToFetch = session.scoredAbstracts.filter(a => selectedPmids.has(a.pmid));
+    if (articlesToFetch.length === 0) {
+      alert("请至少选择一篇文章。");
+      return;
+    }
+    updateActiveSession({ articlesToFetch, stage: 'GATHERING' });
+  };
+
+  if (session.stage === 'PLANNING') return null;
+  
+  if (session.stage === 'SCREENING' && session.loading) {
+    return (
+      <Section 
+        title="第 2 步：文献筛选" 
+        stage="SCREENING" 
+        completedStages={[]} 
+        isLoading={true} 
+        loadingText="正在检索PubMed并让AI评估摘要，请稍候..."
+      >
+        {null}
+      </Section>
+    );
+  }
+  
+  if (session.scoredAbstracts.length === 0) return null;
+
+  return (
+    <Section title="第 2 步：文献筛选" stage="SCREENING" completedStages={['GATHERING', 'SYNTHESIZING', 'DONE']}>
+      <p style={styles.description}>AI已为您评估了相关文献。请勾选您认为最值得精读的文章（建议3-5篇）。</p>
+        <div style={styles.articleList}>
+          {session.scoredAbstracts.map((article) => (
+            <div key={article.pmid} style={styles.articleItem}>
+              <div style={{ display: 'flex', alignItems: 'flex-start' }}>
+                <input type="checkbox" style={{ marginRight: '10px', marginTop: '5px' }} checked={selectedPmids.has(article.pmid)} onChange={() => handleSelectionChange(article.pmid)} />
+                <div style={{ flex: 1 }}>
+                  <h4 style={styles.articleTitle}>{article.title}</h4>
+                  <p style={{...styles.articleMeta, fontStyle: 'italic', color: '#007bff' }}><strong>AI评分: {article.score}/10</strong> - {article.reason}</p>
+                  <details style={styles.articleDetails}><summary>查看摘要</summary><p style={styles.articleAbstract}>{article.abstract}</p></details>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+        {session.stage === 'SCREENING' && (
+          <button onClick={handleStartGathering} disabled={selectedPmids.size === 0} style={{...styles.button, ...((selectedPmids.size === 0) ? styles.buttonDisabled : {})}}>
+            {`进入全文抓取阶段 (${selectedPmids.size})`}
+          </button>
+        )}
+    </Section>
+  );
+};
+
+const FullTextGatheringSection: React.FC<{ session: ResearchSession }> = ({ session }) => {
+  const handleScrapeClick = (pmid: string) => {
+    chrome.runtime.sendMessage({ type: 'SCRAPE_ACTIVE_TAB', sessionId: session.id, pmid: pmid });
+  }
+
+  const handleSynthesizeClick = () => {
+    chrome.runtime.sendMessage({ type: 'SYNTHESIZE_REPORT', sessionId: session.id });
+  }
+
+  if (!['GATHERING', 'SYNTHESIZING', 'DONE'].includes(session.stage)) return null;
+  
+  const totalToFetch = session.articlesToFetch.length;
+  const fetchedCount = session.fullTexts.length;
+  const isDoneGathering = totalToFetch > 0 && fetchedCount === totalToFetch;
+  const currentArticle = isDoneGathering ? null : session.articlesToFetch[fetchedCount];
+
+  return (
+    <Section title={`第 3 步：全文抓取 (${fetchedCount}/${totalToFetch})`} stage="GATHERING" completedStages={['SYNTHESIZING', 'DONE']}>
+        {isDoneGathering ? (
+          <div style={styles.successBox}>
+            <p>太棒了！所有文章全文已抓取完毕。</p>
+            {session.stage === 'GATHERING' && (
+              <button onClick={handleSynthesizeClick} style={styles.button}>
+                生成最终报告
+              </button>
+            )}
+          </div>
+        ) : (
+          currentArticle && (
+            <div>
+              <p style={styles.description}>请按以下步骤操作，抓取下一篇文章的全文：</p>
+              <div style={styles.planCard}>
+                <p><strong>待抓取:</strong> {currentArticle.title} (PMID: {currentArticle.pmid})</p>
+                <ol style={{paddingLeft: '20px', fontSize: '14px'}}>
+                  <li>点击下方按钮，在新标签页中打开文章的PubMed页面。</li>
+                  <li>在打开的页面中，通过DOI或其他链接，**手动导航**到文章全文页面。</li>
+                  <li>确认全文加载完毕后，回到本侧边栏，点击“抓取当前页面”按钮。</li>
+                </ol>
+                <button onClick={() => chrome.tabs.create({ url: `https://pubmed.ncbi.nlm.nih.gov/${currentArticle.pmid}/`})} style={styles.buttonSecondary}>
+                  1. 打开PubMed页面
+                </button>
+                <button onClick={() => handleScrapeClick(currentArticle.pmid)} disabled={session.loading} style={{...styles.button, ...(session.loading ? styles.buttonDisabled : {}), marginLeft: '10px'}}>
+                  {session.loading ? '抓取中...' : '2. 抓取当前页面'}
+                </button>
+              </div>
+            </div>
+          )
+        )}
+    </Section>
+  )
+};
+
+const FinalReportSection: React.FC<{ session: ResearchSession }> = ({ session }) => {
+  if (session.stage !== 'DONE') return null;
+
+  return (
+    <Section title="第 4 步：研究综述报告" stage="DONE" completedStages={['DONE']}>
+      <SimpleMarkdownViewer content={session.finalReport} />
+    </Section>
+  );
+};
+
+
+// #endregion --- Stage Sections ---
+
+
+function SidePanel() {
+  const { addSession, deleteSession, resetActiveSession } = useStore()
+  const { sessions, activeSessionId } = useStore();
+  const activeSession = useMemo(() => sessions.find(s => s.id === activeSessionId), [sessions, activeSessionId]);
+  
   useEffect(() => {
     const handleMessage = (message: any) => {
       if (message.type === "STATE_UPDATED_FROM_BACKGROUND") {
@@ -91,306 +381,85 @@ function SidePanel() {
     chrome.runtime.onMessage.addListener(handleMessage)
     return () => chrome.runtime.onMessage.removeListener(handleMessage)
   }, [])
-  
-  useEffect(() => {
-    setTopic(activeSession?.topic || "");
-    setValidationError(null);
-    setRefinementRequest("");
-    setIsRefining(false);
-    setSelectedArticles(new Set());
-  }, [activeSession]);
 
-  useEffect(() => {
-    if (!activeSession?.loading) {
-        setIsRefining(false);
-    }
-  }, [activeSession?.loading]);
-
-  const handleStart = () => {
-    if (!topic.trim()) {
-      setValidationError("请输入一个研究主题。");
-      return;
-    }
-    setValidationError(null);
+  const handleStartResearch = (topic: string) => {
     let currentSessionId = activeSession?.id;
     if (!currentSessionId || activeSession.topic === "未命名研究") {
       currentSessionId = addSession(topic);
-    } else {
-      const newName = topic.length > 50 ? topic.substring(0, 47) + '...' : topic;
-      updateActiveSession({ topic, name: newName });
     }
     chrome.runtime.sendMessage({ type: "START_RESEARCH", topic, sessionId: currentSessionId });
   };
   
-  const handlePlanChange = (subQuestionId: string, field: 'question' | 'keywords', value: string) => {
-    if (!activeSession?.researchPlan) return;
-    const updatedSubQuestions = activeSession.researchPlan.subQuestions.map(sq => (sq.id === subQuestionId) ? (field === 'keywords' ? { ...sq, keywords: value.split(',').map(k => k.trim()) } : { ...sq, [field]: value }) : sq);
-    updateActiveSession({ researchPlan: { ...activeSession.researchPlan, subQuestions: updatedSubQuestions } });
-  };
-
-  const deleteSubQuestion = (subQuestionId: string) => {
-    if (!activeSession?.researchPlan) return;
-    const updatedSubQuestions = activeSession.researchPlan.subQuestions.filter(sq => sq.id !== subQuestionId);
-    updateActiveSession({ researchPlan: { ...activeSession.researchPlan, subQuestions: updatedSubQuestions } });
-  };
-  
-  const addSubQuestion = () => {
-    if (!activeSession?.researchPlan) return;
-    const newSubQuestion: SubQuestion = { id: `sq_manual_${Date.now()}`, question: "新的子问题（请编辑）", keywords: [] };
-    const updatedSubQuestions = [...activeSession.researchPlan.subQuestions, newSubQuestion];
-    updateActiveSession({ researchPlan: { ...activeSession.researchPlan, subQuestions: updatedSubQuestions } });
-  };
-
-  const handleConfirmPlan = () => {
-    if(!activeSession || !activeSession.researchPlan) return;
-    updateActiveSession({ loading: true, error: null, stage: 'SCREENING' });
-    chrome.runtime.sendMessage({
-      type: "EXECUTE_SEARCH",
-      plan: activeSession.researchPlan,
-      sessionId: activeSession.id
-    });
-  };
-  
-  const handleRequestRefinement = () => {
-    if (!refinementRequest.trim() || !activeSession) {
-      alert("请输入您的修改意见。");
-      return;
-    }
-    setIsRefining(true);
-    chrome.runtime.sendMessage({ type: "REFINE_PLAN", sessionId: activeSession.id, feedback: refinementRequest });
-  };
-
   const handleDeleteCurrentSession = () => {
     if (activeSession && confirm("您确定要删除这个研究项目吗？此操作不可撤销。")) {
         deleteSession(activeSession.id);
     }
   }
 
-  const handleArticleSelection = (pmid: string) => {
-    setSelectedArticles(prevSelected => {
-      const newSelected = new Set(prevSelected);
-      if (newSelected.has(pmid)) {
-        newSelected.delete(pmid);
-      } else {
-        newSelected.add(pmid);
-      }
-      return newSelected;
-    });
-  };
-
-  // 【修改】此函数现在仅用于启动全文抓取流程
-  const handleStartGathering = () => {
-    if (!activeSession) return;
-    const articlesToProcess = activeSession.scoredAbstracts.filter(a => selectedArticles.has(a.pmid));
-    if (articlesToProcess.length === 0) {
-      alert("请至少选择一篇文章。");
-      return;
-    }
-    chrome.runtime.sendMessage({
-      type: "START_GATHERING",
-      sessionId: activeSession.id,
-      articles: articlesToProcess
-    });
-  };
-  
-  // 【新增】处理 "抓取当前页面" 按钮的函数
-  const handleScrapeClick = (pmid: string) => {
-    if (!activeSession) return;
-    chrome.runtime.sendMessage({
-      type: 'SCRAPE_ACTIVE_TAB',
-      sessionId: activeSession.id,
-      pmid: pmid
-    });
-  }
-
-  // 【新增】处理 "生成最终报告" 按钮的函数
-  const handleSynthesizeClick = () => {
-    if (!activeSession) return;
-     chrome.runtime.sendMessage({
-      type: 'SYNTHESIZE_REPORT',
-      sessionId: activeSession.id,
-    });
-  }
-
-
-  const renderInitialView = () => (
-    <div>
-      <h3>您想研究什么？</h3>
-      <p style={styles.description}>选择一个已有研究，或在下方输入新主题开始。</p>
-      <textarea value={topic} onChange={(e) => { setTopic(e.target.value); if (validationError) setValidationError(null); }} placeholder="例如：肠道菌群与抑郁症的最新研究进展" style={{ ...styles.textarea, ...(validationError ? styles.inputError : {}) }} />
-      {validationError && <p style={styles.errorText}>{validationError}</p>}
-      <button onClick={handleStart} disabled={activeSession?.loading} style={{...styles.button, ...(activeSession?.loading ? styles.buttonDisabled : {})}}>
-        {activeSession?.loading ? "正在规划..." : (activeSession ? "更新并开始研究" : "开始新研究")}
-      </button>
-    </div>
-  )
-
-  const renderResearchPlan = (plan: ResearchPlan) => (
-    <div>
-      <h3>研究计划协商</h3>
-      <p style={styles.description}>AI为您起草了以下计划。您可以直接编辑，或在下方通过对话让AI帮您修改。</p>
-      <div style={{ marginTop: '15px' }}><label style={styles.label}>AI 提出的澄清问题 (供您参考)</label><p style={styles.clarification}>{plan.clarification}</p></div>
-      {plan.subQuestions.map((sq) => (
-        <div key={sq.id} style={styles.planCard}>
-          <button onClick={() => deleteSubQuestion(sq.id)} style={styles.deleteButton} title="删除此子问题">×</button>
-          <label style={styles.label}>子问题</label>
-          <textarea value={sq.question} onChange={(e) => handlePlanChange(sq.id, 'question', e.target.value)} style={styles.textareaSmall}/>
-          <label style={{...styles.label, marginTop: '10px'}}>关键词 (逗号分隔)</label>
-          <input type="text" value={sq.keywords.join(', ')} onChange={(e) => handlePlanChange(sq.id, 'keywords', e.target.value)} style={styles.input}/>
-        </div>
-      ))}
-      <button onClick={addSubQuestion} style={{...styles.buttonSecondary, marginTop: '10px'}}>+ 手动添加子问题</button>
-      <div style={styles.refinementBox}><h4 style={styles.label}>与AI对话以优化计划</h4><textarea value={refinementRequest} onChange={(e) => setRefinementRequest(e.target.value)} placeholder="例如：请合并关于治疗的两个问题。再增加一个关于副作用的子问题。" style={styles.textarea}/>
-        <button onClick={handleRequestRefinement} disabled={isRefining || activeSession?.loading} style={{...styles.button, ...( (isRefining || activeSession?.loading) ? styles.buttonDisabled : {})}}>
-          {isRefining ? "正在思考..." : "发送修改意见给AI"}
-        </button>
-      </div>
-      <hr style={{border: 'none', borderTop: '1px solid #eee', margin: '20px 0'}}/>
-      <button onClick={handleConfirmPlan} disabled={activeSession?.loading} style={{...styles.button, backgroundColor: '#28a745'}}>
-          {activeSession?.loading ? "..." : "计划确认，开始检索文献"}
-      </button>
-      <button onClick={resetActiveSession} style={{...styles.buttonSecondary, backgroundColor: '#6c757d'}}>重置研究</button>
-    </div>
-  )
-  
-  const renderScreeningResults = (scoredAbstracts: ScoredArticle[]) => (
-    <div>
-        <h3>文献评估结果</h3>
-        <p style={styles.description}>AI已为您评估了相关文献。请勾选您认为最值得精读的文章（建议3-5篇）。</p>
-        <div style={styles.articleList}>
-          {scoredAbstracts.map((article) => (
-            <div key={article.pmid} style={styles.articleItem}>
-              <div style={{ display: 'flex', alignItems: 'flex-start' }}><input type="checkbox" style={{ marginRight: '10px', marginTop: '5px' }} checked={selectedArticles.has(article.pmid)} onChange={() => handleArticleSelection(article.pmid)} />
-                <div style={{ flex: 1 }}>
-                  <h4 style={styles.articleTitle}>{article.title}</h4>
-                  <p style={styles.articleMeta}>
-                    <strong>PMID:</strong> <a href={`https://pubmed.ncbi.nlm.nih.gov/${article.pmid}/`} target="_blank" rel="noopener noreferrer">{article.pmid}</a>
-                  </p>
-                  <p style={{...styles.articleMeta, fontStyle: 'italic', color: '#007bff' }}><strong>AI评分: {article.score}/10</strong> - {article.reason}</p>
-                  <details style={styles.articleDetails}><summary>查看摘要</summary><p style={styles.articleAbstract}>{article.abstract}</p></details>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-        <button onClick={handleStartGathering} disabled={selectedArticles.size === 0 || activeSession?.loading} style={{...styles.button, ...((selectedArticles.size === 0 || activeSession?.loading) ? styles.buttonDisabled : {})}}>
-          {`开始全文抓取 (${selectedArticles.size})`}
-        </button>
+  const renderError = () => (
+    <div style={styles.errorBox}>
+      <h4>发生错误</h4>
+      <p>{activeSession?.error}</p>
+      <button onClick={() => resetActiveSession()} style={styles.button}>重置研究</button>
     </div>
   );
-
-  // 【新增】渲染全文抓取阶段的UI
-  const renderFullTextGatheringView = (session: ResearchSession) => {
-    const totalToFetch = session.articlesToFetch.length;
-    const fetchedCount = session.fullTexts.length;
-    const isDoneGathering = totalToFetch > 0 && fetchedCount === totalToFetch;
-    const currentArticle = isDoneGathering ? null : session.articlesToFetch[fetchedCount];
-
-    return (
-      <div>
-        <h3>全文抓取 ({fetchedCount}/{totalToFetch})</h3>
-        {isDoneGathering ? (
-          <div style={styles.successBox}>
-            <p>太棒了！所有文章全文已抓取完毕。</p>
-            <button onClick={handleSynthesizeClick} disabled={session.loading} style={{...styles.button, ...(session.loading ? styles.buttonDisabled : {})}}>
-              {session.loading ? 'AI正在撰写...' : '生成最终报告'}
-            </button>
-          </div>
-        ) : (
-          currentArticle && (
-            <div>
-              <p style={styles.description}>请按以下步骤操作，抓取下一篇文章的全文：</p>
-              <div style={styles.planCard}>
-                <p><strong>待抓取:</strong> {currentArticle.title} (PMID: {currentArticle.pmid})</p>
-                <ol style={{paddingLeft: '20px'}}>
-                  <li>点击下方按钮，在新标签页中打开文章的PubMed页面。</li>
-                  <li>在打开的页面中，通过DOI或其他链接，**手动导航**到文章全文页面。</li>
-                  <li>确认全文加载完毕后，回到本侧边栏，点击“抓取当前页面”按钮。</li>
-                </ol>
-                <button 
-                  onClick={() => chrome.tabs.create({ url: `https://pubmed.ncbi.nlm.nih.gov/${currentArticle.pmid}/`})} 
-                  style={styles.buttonSecondary}
-                >
-                  1. 打开PubMed页面
-                </button>
-                <button 
-                  onClick={() => handleScrapeClick(currentArticle.pmid)} 
-                  disabled={session.loading} 
-                  style={{...styles.button, ...(session.loading ? styles.buttonDisabled : {}), marginLeft: '10px'}}
-                >
-                  {session.loading ? '抓取中...' : '2. 抓取当前页面'}
-                </button>
-              </div>
-            </div>
-          )
-        )}
-        <hr style={{border: 'none', borderTop: '1px solid #eee', margin: '20px 0'}}/>
-        <h4>已抓取列表:</h4>
-        <ul style={{fontSize: '12px', paddingLeft: '20px'}}>
-          {session.fullTexts.map(ft => (
-            <li key={ft.pmid}>PMID: {ft.pmid} (✓)</li>
-          ))}
-        </ul>
-      </div>
-    );
-  };
-
-  const renderFinalReport = (session: ResearchSession) => (
-    <div>
-        <h3>研究综述报告</h3>
-        <p style={styles.description}>AI 已根据您选择的文献，围绕您的研究计划生成了下面的报告。</p>
-        <SimpleMarkdownViewer content={session.finalReport} />
-        <button onClick={resetActiveSession} style={{...styles.buttonSecondary, backgroundColor: '#6c757d', marginTop: '20px'}}>完成，重置研究</button>
-    </div>
-  );
-
-  const renderContent = () => {
-    if (!activeSession) return renderInitialView();
-    const { stage, loading, error, researchPlan, scoredAbstracts, finalReport } = activeSession;
-    if (error) return (<div style={styles.errorBox}><h4>发生错误</h4><p>{error}</p><button onClick={resetActiveSession} style={styles.button}>重试</button></div>);
-    if (loading && stage !== 'GATHERING') {
-      const messages: {[key: string]: string} = {PLANNING: "AI正在为您规划研究方向...", SCREENING: "正在检索PubMed并让AI评估摘要...", SYNTHESIZING: "AI正在阅读全文并撰写报告，这可能需要几分钟..."}
-      return (<div style={styles.loadingBox}><p>{messages[stage] || "AI 正在工作中..."}</p></div>);
-    }
-    switch (stage) {
-      case 'IDLE':
-      case 'PLANNING':
-        return renderInitialView();
-      case 'SCREENING':
-        return scoredAbstracts.length > 0 ? renderScreeningResults(scoredAbstracts) : renderResearchPlan(researchPlan!);
-      case 'GATHERING':
-        return renderFullTextGatheringView(activeSession);
-      case 'SYNTHESIZING':
-         return (<div style={styles.loadingBox}><p>AI正在阅读全文并撰写报告，这可能需要几分钟...</p></div>);
-      case 'DONE':
-        return finalReport ? renderFinalReport(activeSession) : (<div style={styles.errorBox}><p>报告生成完毕，但内容为空。</p><button onClick={resetActiveSession} style={styles.button}>重试</button></div>);
-      default:
-        return <p>未知阶段: {stage}</p>;
-    }
-  }
 
   return (
     <div style={styles.container}>
       <SessionManager />
+      <div style={styles.header}>
+         <h1>PubMed RAG 助理</h1>
+         {activeSession && (
+           <div>
+             <button onClick={() => resetActiveSession()} style={{...styles.deleteSessionButton, color: '#6c757d', borderColor: '#6c757d', marginRight: '10px'}} title="重置当前研究">重置</button>
+             <button onClick={handleDeleteCurrentSession} style={styles.deleteSessionButton} title="删除当前研究项目">删除</button>
+           </div>
+         )}
+      </div>
       <div style={styles.mainContent}>
-        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-           <h1>PubMed RAG 助理</h1>
-           {activeSession && <button onClick={handleDeleteCurrentSession} style={styles.deleteSessionButton} title="删除当前研究项目">删除当前研究</button>}
-        </div>
-        {renderContent()}
+        {!activeSession && <InitialSection session={null} onStart={handleStartResearch} />}
+        {activeSession && (
+          <>
+            {activeSession.error && renderError()}
+
+            {activeSession.stage === 'IDLE' && <InitialSection session={activeSession} onStart={handleStartResearch} />}
+            
+            {activeSession.stage === 'PLANNING' && (
+              activeSession.loading 
+                ? <div style={styles.loadingBox}><p>AI正在为您规划研究方向...</p></div> 
+                : <ResearchPlanSection session={activeSession} />
+            )}
+
+            {['SCREENING', 'GATHERING', 'SYNTHESIZING', 'DONE'].includes(activeSession.stage) && (
+              <>
+                <ResearchPlanSection session={activeSession} />
+                <ScreeningResultsSection session={activeSession} />
+                <FullTextGatheringSection session={activeSession} />
+                {activeSession.stage === 'SYNTHESIZING' && <div style={styles.loadingBox}><p>AI正在阅读全文并撰写报告，这可能需要几分钟...</p></div>}
+                <FinalReportSection session={activeSession} />
+              </>
+            )}
+          </>
+        )}
       </div>
     </div>
   )
 }
 
 const styles: { [key: string]: React.CSSProperties } = {
-  container: { display: 'flex', flexDirection: 'column', height: '100vh', fontFamily: "sans-serif" },
-  mainContent: { flex: 1, padding: '0 15px 15px 15px', overflowY: 'auto' },
+  container: { display: 'flex', flexDirection: 'column', height: '100vh', fontFamily: "sans-serif", backgroundColor: '#f0f2f5' },
+  header: {
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    padding: '10px 15px',
+    backgroundColor: '#fff',
+    borderBottom: '1px solid #dee2e6'
+  },
+  mainContent: { flex: 1, overflowY: 'auto' },
   sessionManager: { display: 'flex', padding: '10px', backgroundColor: '#f8f9fa', borderBottom: '1px solid #dee2e6', gap: '10px' },
   sessionSelect: { flex: 1, padding: '5px', borderRadius: '4px', border: '1px solid #ccc' },
   newSessionButton: { padding: '5px 10px', cursor: 'pointer', border: '1px solid #007bff', backgroundColor: 'white', color: '#007bff', borderRadius: '4px' },
   deleteSessionButton: { padding: '4px 8px', fontSize: '12px', cursor: 'pointer', border: '1px solid #dc3545', backgroundColor: 'transparent', color: '#dc3545', borderRadius: '4px'},
-  description: { fontSize: 14, color: '#555' },
+  description: { fontSize: 14, color: '#555', marginTop: 0 },
   textarea: { width: '100%', minHeight: '80px', boxSizing: 'border-box', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', marginTop: '5px' },
   textareaSmall: { width: '100%', minHeight: '50px', boxSizing: 'border-box', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', marginTop: '5px' },
   input: { width: '100%', boxSizing: 'border-box', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', marginTop: '5px' },
@@ -399,30 +468,44 @@ const styles: { [key: string]: React.CSSProperties } = {
   buttonDisabled: { backgroundColor: "#aaa", cursor: "not-allowed" },
   inputError: { border: '1px solid red' },
   errorText: { color: 'red', fontSize: '13px', marginTop: '5px' },
-  errorBox: { padding: '15px', backgroundColor: '#ffebee', border: '1px solid #ef5350', borderRadius: '5px', color: '#c62828' },
+  errorBox: { margin: '15px', padding: '15px', backgroundColor: '#ffebee', border: '1px solid #ef5350', borderRadius: '5px', color: '#c62828' },
   successBox: { padding: '15px', backgroundColor: '#e8f5e9', border: '1px solid #66bb6a', borderRadius: '5px', color: '#2e7d32' },
   loadingBox: { textAlign: 'center', padding: '40px 20px', color: '#555' },
-  planCard: { position: 'relative', border: '1px solid #e0e0e0', padding: '15px', margin: '15px 0', borderRadius: '8px', backgroundColor: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' },
-  deleteButton: { position: 'absolute', top: '5px', right: '5px', background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#aaa', padding: '0 5px', lineHeight: '1' },
+  planCard: { position: 'relative', border: '1px solid #e0e0e0', padding: '15px', margin: '10px 0', borderRadius: '8px', backgroundColor: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' },
   label: { fontWeight: 'bold', display: 'block', fontSize: '14px', marginBottom: '5px' },
   clarification: { fontStyle: 'italic', color: '#555', background: '#f8f9fa', padding: '10px', borderRadius: '5px', border: '1px solid #eee' },
   refinementBox: { marginTop: '25px', padding: '15px', border: '1px dashed #007bff', borderRadius: '8px', backgroundColor: 'rgba(0, 123, 255, 0.05)'},
-  articleList: { maxHeight: '55vh', overflowY: 'auto', border: '1px solid #eee', padding: '5px', borderRadius: '5px', marginTop: '15px' },
-  articleItem: { borderBottom: '1px solid #eee', padding: '10px', transition: 'background-color 0.2s' },
+  articleList: { maxHeight: '40vh', overflowY: 'auto', border: '1px solid #eee', padding: '5px', borderRadius: '5px' },
+  articleItem: { borderBottom: '1px solid #eee', padding: '10px' },
   articleTitle: { margin: 0, fontSize: '14px', fontWeight: 'bold' },
   articleMeta: { margin: '5px 0', fontSize: '12px', color: '#333' },
   articleDetails: { marginTop: '8px', fontSize: '12px' },
   articleAbstract: { margin: '5px 0', paddingLeft: '10px', borderLeft: '3px solid #eee', color: '#555', lineHeight: 1.5, whiteSpace: 'pre-wrap' },
-  reportContent: { 
-    marginTop: '20px', 
-    padding: '15px', 
-    backgroundColor: '#f8f9fa', 
-    borderRadius: '5px',
+  reportContent: { marginTop: '20px', padding: '15px', backgroundColor: '#fff', borderRadius: '5px', border: '1px solid #dee2e6', lineHeight: 1.6, whiteSpace: 'pre-wrap', fontFamily: 'serif' },
+  section: {
+    backgroundColor: '#ffffff',
+    margin: '15px',
+    borderRadius: '8px',
     border: '1px solid #dee2e6',
-    lineHeight: 1.6,
-    whiteSpace: 'pre-wrap', 
-    fontFamily: 'serif',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+    overflow: 'hidden'
   },
+  sectionHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '15px',
+    cursor: 'pointer',
+    backgroundColor: '#f8f9fa',
+    fontWeight: 'bold'
+  },
+  sectionHeaderCompleted: {
+    backgroundColor: '#e9ecef',
+    color: '#495057'
+  },
+  sectionContent: {
+    padding: '15px'
+  }
 };
 
 export default SidePanel;
