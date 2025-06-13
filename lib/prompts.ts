@@ -1,9 +1,7 @@
-// lib/prompts.ts
+// RAG-main/lib/prompts.ts
 
 import type { FetchedArticle, ResearchPlan } from "./types";
-import { v4 as uuidv4 } from 'uuid';
 
-// 【核心变更】移除"3 to 5"的数量限制，让AI自行决定合适的数量
 export const researchStrategistPrompt = (topic: string): string => `
   You are a helpful and collaborative research strategist specializing in biomedical fields. Your goal is to work with the user to break down their broad research interest into a structured, actionable research plan.
 
@@ -32,7 +30,6 @@ export const researchStrategistPrompt = (topic: string): string => `
   }
 `;
 
-// 【核心变更】新增一个用于优化研究计划的Prompt
 export const refinePlanPrompt = (topic: string, currentPlan: ResearchPlan, userFeedback: string): string => `
   You are a helpful research strategist in an ongoing conversation with a user. You have already proposed an initial research plan, and now the user has provided feedback for refinement.
 
@@ -56,6 +53,36 @@ export const refinePlanPrompt = (topic: string, currentPlan: ResearchPlan, userF
   - Do NOT just output the changes. Output the full, revised plan.
 `;
 
+export const searchRefinerPrompt = (plan: ResearchPlan, articles: FetchedArticle[]): string => `
+  You are an expert research analyst. Your task is to determine if the current search results adequately cover all aspects of the user's research plan. If not, you must generate new search queries to fill the gaps.
+
+  **Research Plan:**
+  - Main Topic: "${plan.clarification}"
+  - Sub-questions to address:
+    ${plan.subQuestions.map((sq, i) => `${i + 1}. ${sq.question}`).join('\n    ')}
+
+  **Current Search Results (first ${articles.length} titles and abstracts):**
+  ${articles.map(article => `
+  <article>
+    <pmid>${article.pmid}</pmid>
+    <title>${article.title}</title>
+    <abstract>${article.abstract}</abstract>
+  </article>
+  `).join('\n')}
+
+  **Your Analysis & Task:**
+  1.  Review the sub-questions in the research plan.
+  2.  Review the titles and abstracts of the articles found so far.
+  3.  Identify any sub-questions that are **poorly covered** or **not covered at all** by the current results.
+  4.  For each identified gap, formulate one or two new, specific, and effective PubMed search queries that are likely to find relevant articles. These queries can be more targeted than the initial broad search.
+  5.  If you believe the current results are sufficient and all sub-questions are well-covered, return an empty array.
+
+  **CRITICAL INSTRUCTIONS:**
+  - Your final output MUST be a single, valid JSON object, with no markdown formatting or other text outside of the JSON.
+  - The JSON object must have a single key "new_queries" which is an array of strings.
+  - Example output: { "new_queries": ["(autism) AND (gut microbiota) AND (probiotics)", "serotonin pathway gut-brain axis"] }
+  - If no new queries are needed, output: { "new_queries": [] }
+`;
 
 export const literatureReviewerPrompt = (plan: ResearchPlan, articles: FetchedArticle[]): string => `
   You are a meticulous medical literature reviewer. Your task is to evaluate a list of article abstracts based on their relevance to a given research plan.

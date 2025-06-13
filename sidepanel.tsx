@@ -1,8 +1,8 @@
 // RAG-main/sidepanel.tsx
 
-import React, { useState, useEffect, useMemo } from "react"
+import React, { useState, useEffect, useMemo, useRef } from "react"
 import { useStore } from "./lib/store"
-import type { ResearchPlan, ScoredArticle, SubQuestion, ResearchSession, Stage } from "./lib/types"
+import type { ResearchSession, Stage, FetchedArticle, ScoredArticle } from "./lib/types"
 
 // #region --- Helper Components ---
 
@@ -102,6 +102,31 @@ const Section: React.FC<{
   );
 };
 
+const StrategyLogSection: React.FC<{ session: ResearchSession }> = ({ session }) => {
+    const logContainerRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        if (logContainerRef.current) {
+            logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+        }
+    }, [session.log]);
+
+    if (!session.log || session.log.length === 0) {
+        return null;
+    }
+
+    return (
+        <details style={styles.logDetails}>
+            <summary style={styles.logSummary}>查看代理活动日志</summary>
+            <div ref={logContainerRef} style={styles.logContainer}>
+                {session.log.map((entry, index) => (
+                    <p key={index} style={styles.logEntry}>{entry}</p>
+                ))}
+            </div>
+        </details>
+    );
+};
+
 
 // #endregion --- Helper Components ---
 
@@ -154,7 +179,7 @@ const ResearchPlanSection: React.FC<{ session: ResearchSession }> = ({ session }
 
   const addSubQuestion = () => {
     if (!session?.researchPlan) return;
-    const newSubQuestion: SubQuestion = { id: `sq_manual_${Date.now()}`, question: "新的子问题（请编辑）", keywords: [] };
+    const newSubQuestion = { id: `sq_manual_${Date.now()}`, question: "新的子问题（请编辑）", keywords: [] };
     const updatedSubQuestions = [...session.researchPlan.subQuestions, newSubQuestion];
     updateActiveSession({ researchPlan: { ...session.researchPlan, subQuestions: updatedSubQuestions } });
   };
@@ -216,7 +241,6 @@ const ResearchPlanSection: React.FC<{ session: ResearchSession }> = ({ session }
             <input type="text" value={sq.keywords.join(', ')} onChange={(e) => handlePlanChange(sq.id, 'keywords', e.target.value)} style={styles.input}/>
           </div>
         ))}
-        {/* 【修复】将所有操作按钮重新添加到PLANNING阶段 */}
         {session.stage === 'PLANNING' && (
           <>
             <button onClick={addSubQuestion} style={{...styles.buttonSecondary, marginTop: '10px'}}>+ 手动添加子问题</button>
@@ -238,8 +262,8 @@ const ResearchPlanSection: React.FC<{ session: ResearchSession }> = ({ session }
 };
 
 const ScreeningResultsSection: React.FC<{ session: ResearchSession }> = ({ session }) => {
-  const { updateActiveSession } = useStore();
   const [selectedPmids, setSelectedPmids] = useState<Set<string>>(new Set());
+  const { updateActiveSession } = useStore();
 
   const handleSelectionChange = (pmid: string) => {
     const newSelection = new Set(selectedPmids);
@@ -257,51 +281,102 @@ const ScreeningResultsSection: React.FC<{ session: ResearchSession }> = ({ sessi
     updateActiveSession({ articlesToFetch, stage: 'GATHERING' });
   };
 
-  if (session.stage === 'PLANNING') return null;
-  
-  if (session.stage === 'SCREENING' && session.loading) {
+  const hasScored = session.scoredAbstracts.length > 0;
+  const articles = hasScored ? session.scoredAbstracts : session.rawArticles;
+
+  if (session.loading && articles.length === 0) {
     return (
-      <Section 
-        title="第 2 步：文献筛选" 
-        stage="SCREENING" 
-        completedStages={[]} 
-        isLoading={true} 
-        loadingText="正在检索PubMed并让AI评估摘要，请稍候..."
+      <Section
+        title="第 2 步：文献筛选"
+        stage="SCREENING"
+        completedStages={[]}
+        isLoading={true}
+        loadingText={session.loadingMessage || "正在初始化检索..."}
       >
-        {null}
+        {session.pubmedQuery && (
+          <div style={styles.queryBox}>
+            <strong>PubMed 检索式:</strong>
+            <p style={styles.queryText}>{session.pubmedQuery}</p>
+          </div>
+        )}
       </Section>
     );
   }
   
-  if (session.scoredAbstracts.length === 0) return null;
+  if (!session.loading && articles.length === 0) {
+      return null;
+  }
 
   return (
-    <Section title="第 2 步：文献筛选" stage="SCREENING" completedStages={['GATHERING', 'SYNTHESIZING', 'DONE']}>
-      <p style={styles.description}>AI已为您评估了相关文献。请勾选您认为最值得精读的文章（建议3-5篇）。</p>
-        <div style={styles.articleList}>
-          {session.scoredAbstracts.map((article) => (
-            <div key={article.pmid} style={styles.articleItem}>
-              <div style={{ display: 'flex', alignItems: 'flex-start' }}>
-                <input type="checkbox" style={{ marginRight: '10px', marginTop: '5px' }} checked={selectedPmids.has(article.pmid)} onChange={() => handleSelectionChange(article.pmid)} />
-                <div style={{ flex: 1 }}>
-                  <h4 style={styles.articleTitle}>{article.title}</h4>
-                  <p style={{...styles.articleMeta, fontStyle: 'italic', color: '#007bff' }}><strong>AI评分: {article.score}/10</strong> - {article.reason}</p>
-                  <details style={styles.articleDetails}><summary>查看摘要</summary><p style={styles.articleAbstract}>{article.abstract}</p></details>
-                </div>
+    <Section
+      title="第 2 步：文献筛选"
+      stage="SCREENING"
+      completedStages={['GATHERING', 'SYNTHESIZING', 'DONE']}
+    >
+      {session.pubmedQuery && (
+        <details style={styles.details}>
+          <summary style={styles.summary}>查看本次使用的PubMed检索式</summary>
+          <div style={styles.queryBox}>
+            <p style={styles.queryText}>{session.pubmedQuery}</p>
+          </div>
+        </details>
+      )}
+      
+      <p style={styles.description}>
+        {hasScored
+          ? `AI已为您评估了 ${articles.length} 篇相关文献。请勾选您认为最值得精读的文章。`
+          : `已找到 ${articles.length} 篇文献，正在等待AI评估...`
+        }
+      </p>
+
+      {!hasScored && session.loading && (
+        <div style={styles.inlineLoadingBox}>
+          <p>{session.loadingMessage || "正在调用AI进行评估..."}</p>
+        </div>
+      )}
+
+      <div style={styles.articleList}>
+        {articles.map((article: ScoredArticle | FetchedArticle) => (
+          <div key={article.pmid} style={styles.articleItem}>
+            <div style={{ display: 'flex', alignItems: 'flex-start' }}>
+              <input
+                type="checkbox"
+                style={{ marginRight: '10px', marginTop: '5px' }}
+                disabled={!hasScored}
+                checked={selectedPmids.has(article.pmid)}
+                onChange={() => handleSelectionChange(article.pmid)}
+              />
+              <div style={{ flex: 1 }}>
+                <h4 style={styles.articleTitle}>{article.title}</h4>
+                {(article as ScoredArticle).score !== undefined ? (
+                  <p style={{ ...styles.articleMeta, fontStyle: 'italic', color: '#007bff' }}>
+                    <strong>AI评分: {(article as ScoredArticle).score}/10</strong> - {(article as ScoredArticle).reason}
+                  </p>
+                ) : (
+                  <p style={{ ...styles.articleMeta, fontStyle: 'italic', color: '#6c757d' }}>
+                    [ 正在等待AI评分... ]
+                  </p>
+                )}
+                <details style={styles.articleDetails}><summary>查看摘要</summary><p style={styles.articleAbstract}>{article.abstract}</p></details>
               </div>
             </div>
-          ))}
-        </div>
-        {session.stage === 'SCREENING' && (
-          <button onClick={handleStartGathering} disabled={selectedPmids.size === 0} style={{...styles.button, ...((selectedPmids.size === 0) ? styles.buttonDisabled : {})}}>
-            {`进入全文抓取阶段 (${selectedPmids.size})`}
-          </button>
-        )}
+          </div>
+        ))}
+      </div>
+      
+      {hasScored && session.stage === 'SCREENING' && (
+        <button onClick={handleStartGathering} disabled={selectedPmids.size === 0} style={{ ...styles.button, ...((selectedPmids.size === 0) ? styles.buttonDisabled : {}) }}>
+          {`进入全文抓取阶段 (${selectedPmids.size})`}
+        </button>
+      )}
     </Section>
   );
 };
 
 const FullTextGatheringSection: React.FC<{ session: ResearchSession }> = ({ session }) => {
+  const { updateActiveSession } = useStore();
+  const [copyStatus, setCopyStatus] = useState("复制所有全文");
+
   const handleScrapeClick = (pmid: string) => {
     chrome.runtime.sendMessage({ type: 'SCRAPE_ACTIVE_TAB', sessionId: session.id, pmid: pmid });
   }
@@ -309,41 +384,90 @@ const FullTextGatheringSection: React.FC<{ session: ResearchSession }> = ({ sess
   const handleSynthesizeClick = () => {
     chrome.runtime.sendMessage({ type: 'SYNTHESIZE_REPORT', sessionId: session.id });
   }
+  
+  const handleSkipClick = () => {
+    const currentArticle = session.articlesToFetch[session.gatheringIndex];
+    if(currentArticle) {
+      chrome.runtime.sendMessage({type: 'ADD_TO_LOG', sessionId: session.id, message: `用户选择跳过文章 PMID: ${currentArticle.pmid}`});
+    }
+    updateActiveSession({ gatheringIndex: session.gatheringIndex + 1 });
+  }
+  
+  const handleCopyFullTexts = () => {
+    const formattedTexts = session.fullTexts.map(ft => {
+      const articleInfo = session.articlesToFetch.find(a => a.pmid === ft.pmid);
+      return `## Article: ${articleInfo?.title || 'Unknown Title'}\n**PMID:** ${ft.pmid}\n\n${ft.text}\n\n---\n\n`;
+    }).join('');
+    
+    navigator.clipboard.writeText(formattedTexts).then(() => {
+      setCopyStatus("已复制!");
+      setTimeout(() => setCopyStatus("复制所有全文"), 2000);
+    }).catch(err => {
+      alert('复制失败: ' + err);
+    });
+  }
 
   if (!['GATHERING', 'SYNTHESIZING', 'DONE'].includes(session.stage)) return null;
   
   const totalToFetch = session.articlesToFetch.length;
-  const fetchedCount = session.fullTexts.length;
-  const isDoneGathering = totalToFetch > 0 && fetchedCount === totalToFetch;
-  const currentArticle = isDoneGathering ? null : session.articlesToFetch[fetchedCount];
+  const isDoneGathering = session.gatheringIndex >= totalToFetch;
+  const currentArticle = isDoneGathering ? null : session.articlesToFetch[session.gatheringIndex];
 
   return (
-    <Section title={`第 3 步：全文抓取 (${fetchedCount}/${totalToFetch})`} stage="GATHERING" completedStages={['SYNTHESIZING', 'DONE']}>
+    <Section 
+      title={`第 3 步：全文抓取 (${session.fullTexts.length}/${totalToFetch})`} 
+      stage="GATHERING" 
+      completedStages={['SYNTHESIZING', 'DONE']}
+    >
         {isDoneGathering ? (
-          <div style={styles.successBox}>
-            <p>太棒了！所有文章全文已抓取完毕。</p>
-            {session.stage === 'GATHERING' && (
-              <button onClick={handleSynthesizeClick} style={styles.button}>
-                生成最终报告
+          <div>
+            <div style={styles.successBox}>
+              <p>太棒了！所有文章已处理完毕（抓取或跳过）。</p>
+              {session.stage === 'GATHERING' && (
+                <button onClick={handleSynthesizeClick} style={styles.button} disabled={session.fullTexts.length === 0}>
+                  {session.fullTexts.length > 0 ? `生成最终报告 (${session.fullTexts.length}篇)` : '没有可供分析的文章'}
+                </button>
+              )}
+            </div>
+            
+            <details style={{marginTop: '20px'}}>
+              <summary style={styles.summary}>查看/复制已抓取的全文 ({session.fullTexts.length}篇)</summary>
+              <div style={{...styles.articleList, marginTop: '10px'}}>
+                {session.fullTexts.map(ft => {
+                   const articleInfo = session.articlesToFetch.find(a => a.pmid === ft.pmid);
+                   return (
+                     <div key={ft.pmid} style={styles.articleItem}>
+                       <h4 style={styles.articleTitle}>{articleInfo?.title}</h4>
+                       <p style={{...styles.articleAbstract, whiteSpace: 'pre-wrap', maxHeight: '100px', overflow: 'hidden'}}>{ft.text}</p>
+                     </div>
+                   )
+                })}
+              </div>
+              <button onClick={handleCopyFullTexts} style={{...styles.buttonSecondary, width: '100%'}}>
+                {copyStatus}
               </button>
-            )}
+            </details>
           </div>
         ) : (
           currentArticle && (
             <div>
               <p style={styles.description}>请按以下步骤操作，抓取下一篇文章的全文：</p>
               <div style={styles.planCard}>
-                <p><strong>待抓取:</strong> {currentArticle.title} (PMID: {currentArticle.pmid})</p>
+                <p><strong>待处理 ({session.gatheringIndex + 1}/{totalToFetch}):</strong> {currentArticle.title} (PMID: {currentArticle.pmid})</p>
                 <ol style={{paddingLeft: '20px', fontSize: '14px'}}>
                   <li>点击下方按钮，在新标签页中打开文章的PubMed页面。</li>
                   <li>在打开的页面中，通过DOI或其他链接，**手动导航**到文章全文页面。</li>
                   <li>确认全文加载完毕后，回到本侧边栏，点击“抓取当前页面”按钮。</li>
+                  <li>如果无法访问或不需此文，可直接“跳过此文”。</li>
                 </ol>
                 <button onClick={() => chrome.tabs.create({ url: `https://pubmed.ncbi.nlm.nih.gov/${currentArticle.pmid}/`})} style={styles.buttonSecondary}>
                   1. 打开PubMed页面
                 </button>
                 <button onClick={() => handleScrapeClick(currentArticle.pmid)} disabled={session.loading} style={{...styles.button, ...(session.loading ? styles.buttonDisabled : {}), marginLeft: '10px'}}>
                   {session.loading ? '抓取中...' : '2. 抓取当前页面'}
+                </button>
+                <button onClick={handleSkipClick} disabled={session.loading} style={{...styles.buttonSecondary, marginLeft: '10px', borderColor: '#6c757d'}}>
+                  跳过此文
                 </button>
               </div>
             </div>
@@ -417,7 +541,10 @@ function SidePanel() {
          )}
       </div>
       <div style={styles.mainContent}>
+        {activeSession && <StrategyLogSection session={activeSession} />}
+        
         {!activeSession && <InitialSection session={null} onStart={handleStartResearch} />}
+        
         {activeSession && (
           <>
             {activeSession.error && renderError()}
@@ -479,12 +606,12 @@ const styles: { [key: string]: React.CSSProperties } = {
   articleItem: { borderBottom: '1px solid #eee', padding: '10px' },
   articleTitle: { margin: 0, fontSize: '14px', fontWeight: 'bold' },
   articleMeta: { margin: '5px 0', fontSize: '12px', color: '#333' },
-  articleDetails: { marginTop: '8px', fontSize: '12px' },
+  articleDetails: { marginTop: '8px', fontSize: '12px', cursor: 'pointer' },
   articleAbstract: { margin: '5px 0', paddingLeft: '10px', borderLeft: '3px solid #eee', color: '#555', lineHeight: 1.5, whiteSpace: 'pre-wrap' },
   reportContent: { marginTop: '20px', padding: '15px', backgroundColor: '#fff', borderRadius: '5px', border: '1px solid #dee2e6', lineHeight: 1.6, whiteSpace: 'pre-wrap', fontFamily: 'serif' },
   section: {
     backgroundColor: '#ffffff',
-    margin: '15px',
+    margin: '0 15px 15px 15px',
     borderRadius: '8px',
     border: '1px solid #dee2e6',
     boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
@@ -505,7 +632,68 @@ const styles: { [key: string]: React.CSSProperties } = {
   },
   sectionContent: {
     padding: '15px'
-  }
+  },
+  details: {
+    marginBottom: '15px'
+  },
+  summary: {
+    cursor: 'pointer',
+    fontWeight: 'bold',
+    fontSize: '14px',
+    color: '#0056b3'
+  },
+  queryBox: { 
+    padding: '10px', 
+    marginTop: '10px', 
+    backgroundColor: '#e9ecef', 
+    borderRadius: '4px', 
+    border: '1px solid #dee2e6', 
+    wordBreak: 'break-all'
+  },
+  queryText: { 
+    margin: 0, 
+    fontSize: '13px', 
+    color: '#343a40', 
+    whiteSpace: 'pre-wrap'
+  },
+  logDetails: {
+      margin: '15px',
+      padding: '10px',
+      backgroundColor: '#fff',
+      border: '1px solid #dee2e6',
+      borderRadius: '8px'
+  },
+  logSummary: {
+      cursor: 'pointer',
+      fontWeight: 'bold',
+      fontSize: '14px',
+  },
+  logContainer: {
+      maxHeight: '150px',
+      overflowY: 'auto',
+      marginTop: '10px',
+      padding: '10px',
+      backgroundColor: '#f8f9fa',
+      borderRadius: '4px',
+      borderLeft: '3px solid #007bff'
+  },
+  logEntry: {
+      margin: '0 0 5px 0',
+      fontSize: '12px',
+      color: '#495057',
+      whiteSpace: 'pre-wrap',
+      fontFamily: 'monospace',
+      lineHeight: '1.4'
+  },
+  inlineLoadingBox: {
+    textAlign: 'center',
+    padding: '20px',
+    color: '#555',
+    backgroundColor: 'rgba(0, 123, 255, 0.05)',
+    borderRadius: '5px',
+    margin: '10px 0',
+    border: '1px dashed #007bff'
+  },
 };
 
 export default SidePanel;

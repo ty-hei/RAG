@@ -4,9 +4,20 @@ import { Storage } from "@plasmohq/storage"
 import { v4 as uuidv4 } from 'uuid';
 
 import { callLlm } from "./lib/llm"
-import { researchStrategistPrompt, refinePlanPrompt, literatureReviewerPrompt, synthesisWriterPrompt } from "./lib/prompts"
+import { researchStrategistPrompt, refinePlanPrompt, searchRefinerPrompt, literatureReviewerPrompt, synthesisWriterPrompt } from "./lib/prompts"
 import { useStore } from "./lib/store"
 import type { LLMConfig, ResearchPlan, FetchedArticle, ScoredArticle } from "./lib/types"
+
+async function addToLog(sessionId: string, message: string) {
+    await useStore.persist.rehydrate();
+    const { sessions, updateSessionById } = useStore.getState();
+    const session = sessions.find(s => s.id === sessionId);
+    if (session) {
+        const newLog = [...session.log, `[${new Date().toLocaleTimeString()}] ${message}`];
+        updateSessionById(sessionId, { log: newLog });
+        notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
+    }
+}
 
 chrome.runtime.onInstalled.addListener(() => { console.log("PubMed RAG Assistant installed.") });
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => console.error(error));
@@ -45,10 +56,10 @@ const notifySidePanel = (message: any) => {
   });
 };
 
-// 【核心修正】修复此函数中的状态流转逻辑
 async function handleStartResearch(topic: string, sessionId: string) {
   const { updateSessionById } = useStore.getState();
   await useStore.persist.rehydrate();
+  await addToLog(sessionId, `研究启动，主题: "${topic}"`);
   updateSessionById(sessionId, { loading: true, stage: "PLANNING", topic: topic, error: null });
   notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
 
@@ -57,21 +68,21 @@ async function handleStartResearch(topic: string, sessionId: string) {
     const config = await storage.get<LLMConfig>("llmConfig")
     if (!config?.apiKey) throw new Error("API密钥未配置。请在设置页面中设置。")
 
+    await addToLog(sessionId, "调用LLM生成初步研究计划...");
     const prompt = researchStrategistPrompt(topic)
     const llmResponse = await callLlm(prompt, config, config.fastModel, "json")
     const cleanedResponse = llmResponse.trim().replace(/^```json\s*/, "").replace(/\s*```$/, "")
     let plan: ResearchPlan = JSON.parse(cleanedResponse);
     plan = ensureSubQuestionIds(plan);
-
-    // 【修正】: 获取计划后，应停留在PLANNING阶段，并设置loading为false，等待用户确认。
-    // 而不是直接跳转到 SCREENING 阶段。
+    
+    await addToLog(sessionId, "研究计划已生成，等待用户审核。");
     updateSessionById(sessionId, { researchPlan: plan, stage: "PLANNING", loading: false });
 
   } catch (err) {
     const errorMessage = err instanceof SyntaxError ? "无法解析AI模型的返回结果，请稍后重试。" : err.message
+    await addToLog(sessionId, `错误: ${errorMessage}`);
     updateSessionById(sessionId, { error: errorMessage, loading: false, stage: "IDLE" });
   } finally {
-    // 确保前端总是收到状态更新
     notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   }
 }
@@ -81,9 +92,13 @@ async function handleRefinePlan(sessionId: string, feedback: string) {
   await useStore.persist.rehydrate();
   const currentSession = useStore.getState().sessions.find(s => s.id === sessionId);
   if (!currentSession || !currentSession.researchPlan) {
-    updateSessionById(sessionId, { error: "无法优化计划：未找到当前研究计划。", loading: false });
+    const errorMsg = "无法优化计划：未找到当前研究计划。";
+    await addToLog(sessionId, `错误: ${errorMsg}`);
+    updateSessionById(sessionId, { error: errorMsg, loading: false });
     return;
   }
+  
+  await addToLog(sessionId, `收到用户反馈，正在优化计划: "${feedback}"`);
   updateSessionById(sessionId, { loading: true, error: null });
   notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   
@@ -98,9 +113,11 @@ async function handleRefinePlan(sessionId: string, feedback: string) {
     let refinedPlan: ResearchPlan = JSON.parse(cleanedResponse);
     refinedPlan = ensureSubQuestionIds(refinedPlan);
     
+    await addToLog(sessionId, "计划已根据反馈优化，等待用户审核。");
     updateSessionById(sessionId, { researchPlan: refinedPlan, loading: false });
   } catch (err) {
     const errorMessage = err instanceof SyntaxError ? "无法解析AI模型的返回结果，请稍后重试。" : err.message;
+    await addToLog(sessionId, `错误: ${errorMessage}`);
     updateSessionById(sessionId, { error: errorMessage, loading: false });
   } finally {
       notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
@@ -110,56 +127,134 @@ async function handleRefinePlan(sessionId: string, feedback: string) {
 async function handleExecuteSearch(plan: ResearchPlan, sessionId: string) {
   const { updateSessionById } = useStore.getState();
   await useStore.persist.rehydrate();
-  updateSessionById(sessionId, { loading: true, stage: "SCREENING", error: null });
+  
+  await addToLog(sessionId, "计划已确认，开始执行文献检索...");
+  updateSessionById(sessionId, {
+    loading: true,
+    loadingMessage: "正在组合关键词并准备初步检索...",
+    stage: "SCREENING",
+    error: null,
+    pubmedQuery: null,
+    rawArticles: [],
+    scoredAbstracts: [],
+  });
   notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
 
   try {
+    const storage = new Storage({ area: "local" });
+    const config = await storage.get<LLMConfig>("llmConfig");
+    if (!config?.apiKey) throw new Error("API密钥未配置。");
+    
     const allKeywords = plan.subQuestions.flatMap(sq => sq.keywords).filter(Boolean);
     const uniqueKeywords = [...new Set(allKeywords)];
-    if (uniqueKeywords.length === 0) {
-      throw new Error("研究计划中没有任何关键词，请检查计划。")
-    }
+    if (uniqueKeywords.length === 0) throw new Error("研究计划中没有任何关键词，请检查计划。")
+    
     const searchTerm = uniqueKeywords.join(" OR ");
-    const esearchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${encodeURIComponent(searchTerm)}&retmax=20&retmode=json`;
+    await addToLog(sessionId, `生成了初步检索式: ${searchTerm}`);
+    updateSessionById(sessionId, { pubmedQuery: searchTerm, loadingMessage: "正在向PubMed API发送初步请求..." });
+    notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
+
+    // 1. 初步广度搜索
+    const esearchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${encodeURIComponent(searchTerm)}&retmax=50&retmode=json`;
     const esearchResponse = await fetch(esearchUrl);
     if (!esearchResponse.ok) throw new Error(`PubMed ESearch API failed with status: ${esearchResponse.status}`);
     const esearchData = await esearchResponse.json();
-    const pmids: string[] = esearchData.esearchresult?.idlist || [];
+    const initialPmids: string[] = esearchData.esearchresult?.idlist || [];
 
-    if (pmids.length === 0) {
-      throw new Error("未能从PubMed找到任何相关文献。请尝试调整关键词。");
-    }
-    const efetchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=${pmids.join(",")}&rettype=abstract&retmode=xml`;
+    if (initialPmids.length === 0) throw new Error("初步搜索未能从PubMed找到任何相关文献。请尝试调整关键词。");
+    
+    await addToLog(sessionId, `初步搜索找到 ${initialPmids.length} 篇文献，正在获取摘要...`);
+    updateSessionById(sessionId, { loadingMessage: `初步搜索找到 ${initialPmids.length} 篇文献，正在获取摘要...` });
+    notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
+    
+    const efetchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=${initialPmids.join(",")}&rettype=abstract&retmode=xml`;
     const efetchResponse = await fetch(efetchUrl);
     if (!efetchResponse.ok) throw new Error(`PubMed EFetch API failed with status: ${efetchResponse.status}`);
     const xmlText = await efetchResponse.text();
-    const articles: FetchedArticle[] = pmids.map(pmid => {
-      const articleRegex = new RegExp(`<PubmedArticle>.*?<PMID Version="1">${pmid}</PMID>.*?<ArticleTitle>(.*?)</ArticleTitle>.*?<Abstract>(.*?)</Abstract>.*?</PubmedArticle>`, "s");
-      const match = xmlText.match(articleRegex);
-      if (match) {
-        const title = match[1].replace(/<\/?(b|i|sup|sub)>/g, "").trim();
-        const abstractParts = [...match[2].matchAll(/<AbstractText.*?>(.*?)<\/AbstractText>/gs)].map(part => part[1]);
-        const abstract = abstractParts.join(" ").replace(/<\/?(b|i|sup|sub)>/g, "").trim() || "No abstract available in the fetched data.";
-        return { pmid, title, abstract };
-      }
-      return null
-    }).filter(Boolean) as FetchedArticle[];
+    const parseArticles = (pids: string[], text: string): FetchedArticle[] => {
+        return pids.map(pmid => {
+            const articleRegex = new RegExp(`<PubmedArticle>.*?<PMID Version="1">${pmid}</PMID>.*?<ArticleTitle>(.*?)</ArticleTitle>.*?<Abstract>(.*?)</Abstract>.*?</PubmedArticle>`, "s");
+            const match = text.match(articleRegex);
+            if (match) {
+                const title = match[1].replace(/<\/?(b|i|sup|sub)>/g, "").trim();
+                const abstractParts = [...match[2].matchAll(/<AbstractText.*?>(.*?)<\/AbstractText>/gs)].map(part => part[1]);
+                const abstract = abstractParts.join(" ").replace(/<\/?(b|i|sup|sub)>/g, "").trim() || "No abstract available.";
+                return { pmid, title, abstract };
+            }
+            return null;
+        }).filter(Boolean) as FetchedArticle[];
+    };
+    let combinedArticles = parseArticles(initialPmids, xmlText);
+
+    // 更新UI，显示初步结果
+    updateSessionById(sessionId, { rawArticles: combinedArticles, loadingMessage: "正在分析初步结果以优化检索..." });
+    notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
+    await addToLog(sessionId, "初步结果已在界面展示。开始自我反思以优化检索范围...");
+
+    // 2. 自我反思与补充搜索
+    const refinerPrompt = searchRefinerPrompt(plan, combinedArticles);
+    const llmRefinerResponse = await callLlm(refinerPrompt, config, config.fastModel, "json");
+    const cleanedRefinerResponse = llmRefinerResponse.trim().replace(/^```json\s*/, "").replace(/\s*```$/, "");
+    const { new_queries }: { new_queries: string[] } = JSON.parse(cleanedRefinerResponse);
+
+    if (new_queries && new_queries.length > 0) {
+        await addToLog(sessionId, `AI识别到 ${new_queries.length} 个知识缺口，正在执行补充检索...`);
+        updateSessionById(sessionId, { loadingMessage: `AI识别到 ${new_queries.length} 个知识缺口，正在执行补充检索...` });
+        notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
+        const newPmids = new Set<string>();
+
+        for (const query of new_queries) {
+            await addToLog(sessionId, `补充检索: "${query}"`);
+            const supplEsearchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${encodeURIComponent(query)}&retmax=10&retmode=json`;
+            const supplEsearchResponse = await fetch(supplEsearchUrl);
+            if (supplEsearchResponse.ok) {
+                const supplEsearchData = await supplEsearchResponse.json();
+                const foundPimds: string[] = supplEsearchData.esearchresult?.idlist || [];
+                foundPimds.forEach(pmid => newPmids.add(pmid));
+            }
+        }
+        
+        const existingPmidSet = new Set(combinedArticles.map(a => a.pmid));
+        const uniqueNewPmids = [...newPmids].filter(pmid => !existingPmidSet.has(pmid));
+
+        if (uniqueNewPmids.length > 0) {
+            await addToLog(sessionId, `补充检索找到 ${uniqueNewPmids.length} 篇新文献，正在获取摘要...`);
+            const supplEfetchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=${uniqueNewPmids.join(",")}&rettype=abstract&retmode=xml`;
+            const supplEfetchResponse = await fetch(supplEfetchUrl);
+            if (supplEfetchResponse.ok) {
+                const supplXmlText = await supplEfetchResponse.text();
+                const newArticles = parseArticles(uniqueNewPmids, supplXmlText);
+                combinedArticles.push(...newArticles);
+                updateSessionById(sessionId, { rawArticles: combinedArticles });
+                notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
+            }
+        } else {
+            await addToLog(sessionId, "补充检索未发现新的文献。");
+        }
+    } else {
+        await addToLog(sessionId, "AI评估认为初步检索结果已足够全面。");
+    }
+
+    // 3. 最终评估
+    await addToLog(sessionId, `检索流程完成。共 ${combinedArticles.length} 篇文章待评估。`);
+    updateSessionById(sessionId, { loadingMessage: `正在调用AI对 ${combinedArticles.length} 篇文章进行相关性评分...` });
+    notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
     
-    const storage = new Storage({ area: "local" })
-    const config = await storage.get<LLMConfig>("llmConfig");
-    if (!config?.apiKey) throw new Error("API密钥未配置。");
-    const reviewPrompt = literatureReviewerPrompt(plan, articles);
+    const reviewPrompt = literatureReviewerPrompt(plan, combinedArticles);
     const llmResponse = await callLlm(reviewPrompt, config, config.fastModel, "json");
     const cleanedResponse = llmResponse.trim().replace(/^```json\s*/, "").replace(/\s*```$/, "");
     const reviews: { pmid: string; score: number; reason: string }[] = JSON.parse(cleanedResponse);
-    const scoredAbstracts: ScoredArticle[] = articles.map(article => {
+    const scoredAbstracts: ScoredArticle[] = combinedArticles.map(article => {
       const review = reviews.find(r => r.pmid === article.pmid);
       return { ...article, score: review?.score || 0, reason: review?.reason || "AI未提供评估意见。" };
     }).sort((a, b) => b.score - a.score);
 
-    updateSessionById(sessionId, { scoredAbstracts, loading: false });
+    await addToLog(sessionId, "文献评估完成，等待用户筛选。");
+    updateSessionById(sessionId, { scoredAbstracts, rawArticles: [], loading: false, loadingMessage: null });
+
   } catch (err) {
-    updateSessionById(sessionId, { error: err.message, loading: false });
+    await addToLog(sessionId, `错误: ${err.message}`);
+    updateSessionById(sessionId, { error: err.message, loading: false, loadingMessage: null });
   } finally {
     notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   }
@@ -179,82 +274,89 @@ function ensureSubQuestionIds(plan: ResearchPlan) {
 async function handleStartGathering(sessionId: string, articles: ScoredArticle[]) {
   const { updateSessionById } = useStore.getState();
   await useStore.persist.rehydrate();
+  await addToLog(sessionId, `用户已选择 ${articles.length} 篇文章，进入全文抓取阶段。`);
   updateSessionById(sessionId, {
     stage: 'GATHERING',
     articlesToFetch: articles,
     fullTexts: [],
     loading: false,
     error: null,
+    gatheringIndex: 0, 
   });
   notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
 }
 
 async function handleScrapeActiveTab(sessionId: string, pmid: string) {
-  const { updateSessionById, getActiveSession } = useStore.getState();
+  const { updateSessionById, sessions } = useStore.getState();
   await useStore.persist.rehydrate();
-
+  
+  await addToLog(sessionId, `请求抓取当前标签页内容 (目标PMID: ${pmid})...`);
   updateSessionById(sessionId, { loading: true, error: null });
   notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   
   try {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tabs[0] || !tabs[0].id) {
-      throw new Error("找不到有效的激活标签页。");
-    }
+    if (!tabs[0] || !tabs[0].id) throw new Error("找不到有效的激活标签页。");
+    
     const tabId = tabs[0].id;
-
     chrome.tabs.sendMessage(tabId, { type: "DO_SCRAPE" });
 
     const scrapedText = await new Promise<string>((resolve, reject) => {
       const listener = (message: any) => {
         if (message.type === 'SCRAPED_CONTENT' || message.type === 'SCRAPING_FAILED') {
           chrome.runtime.onMessage.removeListener(listener);
-          if (message.type === 'SCRAPED_CONTENT') {
-            resolve(message.payload.text);
-          } else {
-            reject(new Error(message.payload.error));
-          }
+          if (message.type === 'SCRAPED_CONTENT') resolve(message.payload.text);
+          else reject(new Error(message.payload.error));
         }
       };
       chrome.runtime.onMessage.addListener(listener);
       setTimeout(() => {
         chrome.runtime.onMessage.removeListener(listener);
-        reject(new Error("抓取超时。内容脚本没有在规定时间内返回信息。"));
+        reject(new Error("抓取超时 (20秒)。"));
       }, 20000);
     });
 
-    const session = getActiveSession();
+    const session = sessions.find(s => s.id === sessionId);
     if (session) {
       const newFullTexts = [...session.fullTexts, { pmid, text: scrapedText }];
-      updateSessionById(sessionId, { fullTexts: newFullTexts, loading: false });
+      await addToLog(sessionId, `PMID ${pmid} 的全文抓取成功。`);
+      updateSessionById(sessionId, { 
+        fullTexts: newFullTexts, 
+        gatheringIndex: session.gatheringIndex + 1,
+        loading: false 
+      });
     }
-
   } catch (err) {
-    console.error(`抓取标签页失败:`, err);
-    updateSessionById(sessionId, { error: err.message, loading: false });
+    await addToLog(sessionId, `错误: 抓取PMID ${pmid} 失败: ${err.message}`);
+    updateSessionById(sessionId, { error: `抓取PMID ${pmid} 失败: ${err.message}`, loading: false });
   } finally {
     notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   }
 }
 
 async function handleSynthesizeReport(sessionId: string) {
-  const { updateSessionById, getActiveSession } = useStore.getState();
+  const { updateSessionById, sessions } = useStore.getState();
   await useStore.persist.rehydrate();
+  await addToLog(sessionId, "所有全文已就绪，开始生成最终报告...");
   updateSessionById(sessionId, { stage: 'SYNTHESIZING', loading: true, error: null });
   notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   try {
-    const session = getActiveSession();
+    const session = sessions.find(s => s.id === sessionId);
     if (!session || !session.researchPlan || session.fullTexts.length === 0) {
       throw new Error("无法生成报告：缺少研究计划或未抓取到任何全文。");
     }
     const storage = new Storage({ area: "local" });
     const config = await storage.get<LLMConfig>("llmConfig");
     if (!config?.apiKey) throw new Error("API密钥未配置。");
+
+    await addToLog(sessionId, "调用增强模型撰写文献综述...");
     const synthesisPrompt = synthesisWriterPrompt(session.researchPlan, session.fullTexts);
     const finalReport = await callLlm(synthesisPrompt, config, config.smartModel, "text");
+    
+    await addToLog(sessionId, "研究报告生成完毕！");
     updateSessionById(sessionId, { finalReport, stage: 'DONE', loading: false });
   } catch (err) {
-    console.error("报告合成阶段发生错误:", err);
+    await addToLog(sessionId, `错误: 报告合成失败: ${err.message}`);
     updateSessionById(sessionId, { error: err.message, loading: false });
   } finally {
     notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });

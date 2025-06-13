@@ -1,8 +1,9 @@
-// lib/store.ts
+// RAG-main/lib/store.ts
+
 import { create } from "zustand"
 import { createJSONStorage, persist } from "zustand/middleware"
 import { Storage } from "@plasmohq/storage"
-import type { AppState, ResearchSession } from "./types"
+import type { AppState, ResearchSession } from "../lib/types"
 
 const chromeStorage = new Storage({
   area: "local"
@@ -39,12 +40,17 @@ export const useStore = create<AppState>()(
           stage: "IDLE",
           topic: topic,
           researchPlan: null,
+          pubmedQuery: null,
+          rawArticles: [],
           scoredAbstracts: [],
-          articlesToFetch: [], // 【新增】
-          fullTexts: [],       // 【新增】
+          loadingMessage: null,
+          articlesToFetch: [],
+          fullTexts: [],
           finalReport: "",
           loading: false,
           error: null,
+          log: [`[${new Date().toLocaleTimeString()}] 会话已创建: "${topic}"`],
+          gatheringIndex: 0, // 【新增】
         }
         set((state) => ({
           sessions: [...state.sessions, newSession],
@@ -102,12 +108,17 @@ export const useStore = create<AppState>()(
                 ...session,
                 stage: "IDLE",
                 researchPlan: null,
+                pubmedQuery: null,
+                rawArticles: [],
                 scoredAbstracts: [],
-                articlesToFetch: [], // 【新增】
-                fullTexts: [],       // 【新增】
+                loadingMessage: null,
+                articlesToFetch: [],
+                fullTexts: [],
                 finalReport: "",
                 loading: false,
-                error: null
+                error: null,
+                log: [`[${new Date().toLocaleTimeString()}] 会话已重置.`],
+                gatheringIndex: 0, // 【新增】
               };
             }
             return session;

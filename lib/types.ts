@@ -1,9 +1,7 @@
 // RAG-main/lib/types.ts
 
-// 【修改】调整Stage类型以适应新流程
 export type Stage = 'IDLE' | 'PLANNING' | 'SCREENING' | 'GATHERING' | 'SYNTHESIZING' | 'DONE';
 
-// LLM 配置
 export interface LLMConfig {
   provider: 'gemini' | 'openai';
   apiKey: string;
@@ -36,27 +34,30 @@ export interface ScoredArticle extends FetchedArticle {
 }
 
 export interface ResearchSession {
-  id: string; 
-  name: string; 
-  createdAt: number; 
+  id: string;
+  name: string;
+  createdAt: number;
   stage: Stage;
   topic: string;
   researchPlan: ResearchPlan | null;
+  pubmedQuery: string | null;
+  rawArticles: FetchedArticle[];
   scoredAbstracts: ScoredArticle[];
-  // 【新增】用于存储用户选择要处理的文章
+  loadingMessage: string | null;
   articlesToFetch: ScoredArticle[];
-  // 【新增】用于存储已抓取到的全文
   fullTexts: { pmid: string; text: string }[];
   finalReport: string;
   loading: boolean;
   error: string | null;
+  log: string[];
+  // 【新增】用于追踪全文抓取阶段的进度，支持跳过功能
+  gatheringIndex: number;
 }
 
 export interface AppState {
   sessions: ResearchSession[];
   activeSessionId: string | null;
 
-  // Action，用于管理会话
   addSession: (topic: string) => string;
   switchSession: (sessionId: string | null) => void;
   deleteSession: (sessionId: string) => void;
