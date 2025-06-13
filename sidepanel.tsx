@@ -1,8 +1,42 @@
-// sidepanel.tsx
+// RAG-main/sidepanel.tsx
 
 import React, { useState, useEffect, useMemo } from "react"
 import { useStore } from "./lib/store"
-import type { ResearchPlan, ScoredArticle, SubQuestion } from "./lib/types"
+import type { ResearchPlan, ScoredArticle, SubQuestion, ResearchSession } from "./lib/types"
+
+// 【新增】一个简单的Markdown渲染组件，仅支持一些基本元素
+function SimpleMarkdownViewer({ content }: { content: string }) {
+  const [copyStatus, setCopyStatus] = useState('复制报告');
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(content).then(() => {
+      setCopyStatus('已复制!');
+      setTimeout(() => setCopyStatus('复制报告'), 2000);
+    }).catch(err => {
+      alert('复制失败: ' + err);
+    });
+  };
+
+  const renderContent = () => {
+    // 简单的渲染逻辑，将**text**变为<strong>text</strong>等
+    const htmlContent = content
+      .replace(/\n/g, '<br />')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\[PMID:(\d+)\]/g, '<a href="https://pubmed.ncbi.nlm.nih.gov/$1/" target="_blank" rel="noopener noreferrer">[PMID:$1]</a>');
+    
+    return { __html: htmlContent };
+  };
+
+  return (
+    <div>
+        <button onClick={handleCopy} style={{...styles.buttonSecondary, width: 'auto', float: 'right'}}>
+            {copyStatus}
+        </button>
+        <div style={styles.reportContent} dangerouslySetInnerHTML={renderContent()} />
+    </div>
+  );
+}
+
 
 function SessionManager() {
   const { sessions, activeSessionId, switchSession, addSession } = useStore()
@@ -111,7 +145,7 @@ function SidePanel() {
 
   const handleConfirmPlan = () => {
     if(!activeSession || !activeSession.researchPlan) return;
-    updateActiveSession({ loading: true, error: null });
+    updateActiveSession({ loading: true, error: null, stage: 'SCREENING' });
     chrome.runtime.sendMessage({
       type: "EXECUTE_SEARCH",
       plan: activeSession.researchPlan,
@@ -146,14 +180,21 @@ function SidePanel() {
     });
   };
 
+  // 【核心变更】修改此函数以发送生成报告的消息
   const handleGenerateReport = () => {
-    const articlesToProcess = activeSession?.scoredAbstracts.filter(a => selectedArticles.has(a.pmid));
-    if (!articlesToProcess || articlesToProcess.length === 0) {
+    if (!activeSession) return;
+    const articlesToProcess = activeSession.scoredAbstracts.filter(a => selectedArticles.has(a.pmid));
+    if (articlesToProcess.length === 0) {
       alert("请至少选择一篇文章。");
       return;
     }
     console.log("Requesting to generate report for these articles:", articlesToProcess);
-    alert("生成报告功能（第三阶段）待实现！");
+    // 发送消息到后台开始第三阶段
+    chrome.runtime.sendMessage({
+      type: "GENERATE_REPORT",
+      sessionId: activeSession.id,
+      articles: articlesToProcess
+    });
   };
 
   const renderInitialView = () => (
@@ -206,9 +247,9 @@ function SidePanel() {
               <div style={{ display: 'flex', alignItems: 'flex-start' }}><input type="checkbox" style={{ marginRight: '10px', marginTop: '5px' }} checked={selectedArticles.has(article.pmid)} onChange={() => handleArticleSelection(article.pmid)} />
                 <div style={{ flex: 1 }}>
                   <h4 style={styles.articleTitle}>{article.title}</h4>
-<p style={styles.articleMeta}>
-  <strong>PMID:</strong> <a href={`https://pubmed.ncbi.nlm.nih.gov/${article.pmid}/`} target="_blank" rel="noopener noreferrer">{article.pmid}</a>
-</p>
+                  <p style={styles.articleMeta}>
+                    <strong>PMID:</strong> <a href={`https://pubmed.ncbi.nlm.nih.gov/${article.pmid}/`} target="_blank" rel="noopener noreferrer">{article.pmid}</a>
+                  </p>
                   <p style={{...styles.articleMeta, fontStyle: 'italic', color: '#007bff' }}><strong>AI评分: {article.score}/10</strong> - {article.reason}</p>
                   <details style={styles.articleDetails}><summary>查看摘要</summary><p style={styles.articleAbstract}>{article.abstract}</p></details>
                 </div>
@@ -216,18 +257,28 @@ function SidePanel() {
             </div>
           ))}
         </div>
-        <button onClick={handleGenerateReport} disabled={selectedArticles.size === 0} style={{...styles.button, ...((selectedArticles.size === 0) ? styles.buttonDisabled : {})}}>
-          {`获取全文并生成报告 (${selectedArticles.size})`}
+        <button onClick={handleGenerateReport} disabled={selectedArticles.size === 0 || activeSession?.loading} style={{...styles.button, ...((selectedArticles.size === 0 || activeSession?.loading) ? styles.buttonDisabled : {})}}>
+          {activeSession?.loading ? '...' : `获取全文并生成报告 (${selectedArticles.size})`}
         </button>
+    </div>
+  );
+
+  // 【新增】用于渲染最终报告的视图
+  const renderFinalReport = (session: ResearchSession) => (
+    <div>
+        <h3>研究综述报告</h3>
+        <p style={styles.description}>AI 已根据您选择的文献，围绕您的研究计划生成了下面的报告。</p>
+        <SimpleMarkdownViewer content={session.finalReport} />
+        <button onClick={resetActiveSession} style={{...styles.buttonSecondary, backgroundColor: '#6c757d', marginTop: '20px'}}>完成，重置研究</button>
     </div>
   );
 
   const renderContent = () => {
     if (!activeSession) return renderInitialView();
-    const { stage, loading, error, researchPlan, scoredAbstracts } = activeSession;
+    const { stage, loading, error, researchPlan, scoredAbstracts, finalReport } = activeSession;
     if (error) return (<div style={styles.errorBox}><h4>发生错误</h4><p>{error}</p><button onClick={resetActiveSession} style={styles.button}>重试</button></div>);
     if (loading && !isRefining) {
-      const messages = {PLANNING: "AI正在为您规划研究方向...", SCREENING: "正在检索PubMed并让AI评估摘要，请稍候...", SYNTHESIZING: "正在撰写报告..."}
+      const messages: {[key: string]: string} = {PLANNING: "AI正在为您规划研究方向...", SCREENING: "正在检索PubMed并让AI评估摘要，请稍候...", SYNTHESIZING: "正在抓取全文并撰写报告，这可能需要几分钟..."}
       return (<div style={styles.loadingBox}><p>{messages[stage] || "AI 正在工作中..."}</p></div>);
     }
     switch (stage) {
@@ -237,8 +288,12 @@ function SidePanel() {
       case 'SCREENING':
         if (scoredAbstracts && scoredAbstracts.length > 0) { return renderScreeningResults(scoredAbstracts); }
         return researchPlan ? renderResearchPlan(researchPlan) : renderInitialView();
-      case 'SYNTHESIZING': case 'DONE':
-        return <p>后续阶段待实现</p>;
+      // 【核心变更】处理 SYNTHESIZING 和 DONE 阶段
+      case 'SYNTHESIZING':
+         return (<div style={styles.loadingBox}><p>正在抓取全文并撰写报告，这可能需要几分钟...</p></div>);
+      case 'DONE':
+        if (finalReport) return renderFinalReport(activeSession);
+        return (<div style={styles.errorBox}><p>报告生成完毕，但内容为空。</p><button onClick={resetActiveSession} style={styles.button}>重试</button></div>);
       default:
         return <p>未知阶段: {stage}</p>;
     }
@@ -270,7 +325,7 @@ const styles: { [key: string]: React.CSSProperties } = {
   textareaSmall: { width: '100%', minHeight: '50px', boxSizing: 'border-box', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', marginTop: '5px' },
   input: { width: '100%', boxSizing: 'border-box', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', marginTop: '5px' },
   button: { width: '100%', padding: '10px 15px', marginTop: '10px', backgroundColor: "#007bff", color: "white", border: "none", borderRadius: 5, cursor: "pointer", fontSize: 16, transition: 'background-color 0.2s' },
-  buttonSecondary: { width: '100%', padding: '8px 15px', marginTop: '10px', backgroundColor: "#e9ecef", color: "#212529", border: "1px solid #ced4da", borderRadius: 5, cursor: "pointer", fontSize: 14 },
+  buttonSecondary: { width: 'auto', padding: '8px 15px', marginTop: '10px', backgroundColor: "#e9ecef", color: "#212529", border: "1px solid #ced4da", borderRadius: 5, cursor: "pointer", fontSize: 14 },
   buttonDisabled: { backgroundColor: "#aaa", cursor: "not-allowed" },
   inputError: { border: '1px solid red' },
   errorText: { color: 'red', fontSize: '13px', marginTop: '5px' },
@@ -287,6 +342,17 @@ const styles: { [key: string]: React.CSSProperties } = {
   articleMeta: { margin: '5px 0', fontSize: '12px', color: '#333' },
   articleDetails: { marginTop: '8px', fontSize: '12px' },
   articleAbstract: { margin: '5px 0', paddingLeft: '10px', borderLeft: '3px solid #eee', color: '#555', lineHeight: 1.5, whiteSpace: 'pre-wrap' },
+  // 【新增】最终报告的样式
+  reportContent: { 
+    marginTop: '20px', 
+    padding: '15px', 
+    backgroundColor: '#f8f9fa', 
+    borderRadius: '5px',
+    border: '1px solid #dee2e6',
+    lineHeight: 1.6,
+    whiteSpace: 'pre-wrap', // 保持换行
+    fontFamily: 'serif',
+  },
 };
 
 export default SidePanel;

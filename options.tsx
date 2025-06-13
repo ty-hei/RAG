@@ -1,44 +1,40 @@
-// options.tsx
+// RAG-main/options.tsx
 
 import { Storage } from "@plasmohq/storage"
 import React, { useState, useEffect } from "react"
 import type { LLMConfig } from "./lib/types"
 
-// 创建一个存储实例，供整个组件使用
 const storage = new Storage({ area: "local" })
 
-// 默认配置，用于在存储中没有任何内容时进行初始化
 const defaultConfig: LLMConfig = {
   provider: "gemini",
   apiKey: "",
   apiEndpoint: "",
   fastModel: "gemini-1.5-flash-latest",
   smartModel: "gemini-1.5-pro-latest",
-  fetchRateLimit: 15
+  fetchRateLimit: 15,
+  // 【新增】默认关闭人工确认
+  manualScrapingConfirmation: false,
 }
 
 function OptionsPage() {
-  // 使用单一状态来管理表单的全部配置
   const [config, setConfig] = useState<LLMConfig>(defaultConfig)
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle")
 
-  // 当组件首次加载时，从 chrome.storage 中异步加载配置
   useEffect(() => {
     const loadConfig = async () => {
       const savedConfig = await storage.get<LLMConfig>("llmConfig")
-      // 如果找到了已保存的配置，则用它来更新UI状态
+      // 【新增】合并加载的配置和默认配置，以确保新字段存在
       if (savedConfig) {
-        setConfig(savedConfig)
+        setConfig({ ...defaultConfig, ...savedConfig })
       }
     }
     loadConfig()
-  }, []) // 空依赖数组确保此 effect 只在组件挂载时运行一次
+  }, [])
 
-  // 处理保存操作
   const handleSave = async () => {
     setSaveStatus("saving")
     try {
-      // 将当前UI上的配置数据直接写入存储
       await storage.set("llmConfig", config)
       setSaveStatus("saved")
       setTimeout(() => setSaveStatus("idle"), 2000)
@@ -49,16 +45,16 @@ function OptionsPage() {
     }
   }
 
-  // 更新按钮文本以提供用户反馈
   const getButtonText = () => {
     if (saveStatus === "saving") return "正在保存..."
     if (saveStatus === "saved") return "已保存！"
     return "保存设置"
   }
 
-  // 通用的配置更改处理函数
+  // 【新增】更新 handleConfigChange 以支持复选框
   const handleConfigChange = (field: keyof LLMConfig, value: any) => {
-    setConfig((prev) => ({ ...prev, [field]: value }))
+    const isCheckbox = typeof defaultConfig[field] === 'boolean';
+    setConfig((prev) => ({ ...prev, [field]: isCheckbox ? !prev[field] : value }));
   }
 
   return (
@@ -68,6 +64,7 @@ function OptionsPage() {
         请在此处配置您的语言模型API密钥和其它设置。您的数据将安全地存储在本地。
       </p>
 
+      {/* Provider, API Key, Endpoint, Models ... */}
       <div style={styles.formGroup}>
         <label style={styles.label}>AI 提供商</label>
         <select
@@ -130,6 +127,10 @@ function OptionsPage() {
           一个能力强、更深入的模型，用于从全文生成高质量的文献综述报告。
         </p>
       </div>
+      
+      <hr style={{margin: '30px 0', border: 'none', borderTop: '1px solid #eee'}}/>
+      
+      <h2>工作流设置</h2>
 
       <div style={styles.formGroup}>
         <label style={styles.label}>全文抓取速率限制（秒/篇）</label>
@@ -145,6 +146,23 @@ function OptionsPage() {
           为了避免被网站屏蔽，插件将以这个速度逐一打开标签页抓取全文。建议15-30秒。
         </p>
       </div>
+      
+      {/* 【新增】人工确认复选框 */}
+      <div style={styles.formGroup}>
+        <label style={{...styles.label, display: 'flex', alignItems: 'center'}}>
+          <input
+            type="checkbox"
+            checked={config.manualScrapingConfirmation}
+            onChange={() => handleConfigChange("manualScrapingConfirmation", null)}
+            style={{ marginRight: '10px' }}
+          />
+          在抓取全文前进行人工确认
+        </label>
+        <p style={styles.fieldDescription}>
+          启用后，插件会逐一在前台打开文章页面，并显示一个操作栏让您确认或跳过，而不是在后台全自动执行。
+        </p>
+      </div>
+
 
       <div style={styles.formGroup}>
         <button

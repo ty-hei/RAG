@@ -1,9 +1,9 @@
-// lib/types.ts
+// RAG-main/lib/types.ts
 
 // 单个研究任务的阶段
 export type Stage = 'IDLE' | 'PLANNING' | 'SCREENING' | 'SYNTHESIZING' | 'DONE';
 
-// LLM 配置保持不变
+// LLM 配置
 export interface LLMConfig {
   provider: 'gemini' | 'openai';
   apiKey: string;
@@ -11,6 +11,8 @@ export interface LLMConfig {
   fastModel: string;
   smartModel: string;
   fetchRateLimit: number;
+  // 【新增】是否在抓取前进行人工确认
+  manualScrapingConfirmation: boolean;
 }
 
 export interface SubQuestion {
@@ -52,13 +54,12 @@ export interface AppState {
   sessions: ResearchSession[];
   activeSessionId: string | null;
 
-  // 新的Action，用于管理会话
+  // Action，用于管理会话
   addSession: (topic: string) => string;
   switchSession: (sessionId: string | null) => void;
   deleteSession: (sessionId: string) => void;
   renameSession: (sessionId: string, newName: string) => void;
   updateActiveSession: (update: Partial<Omit<ResearchSession, 'id' | 'createdAt'>>) => void;
-  // 【核心变更】新增一个更可靠的、供后台脚本使用的action
   updateSessionById: (sessionId: string, update: Partial<Omit<ResearchSession, 'id' | 'createdAt'>>) => void;
   getActiveSession: () => ResearchSession | null;
   resetActiveSession: () => void;
