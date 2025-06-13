@@ -4,7 +4,6 @@ import React, { useState, useEffect, useMemo } from "react"
 import { useStore } from "./lib/store"
 import type { ResearchPlan, ScoredArticle, SubQuestion } from "./lib/types"
 
-// SessionManager 组件保持不变...
 function SessionManager() {
   const { sessions, activeSessionId, switchSession, addSession } = useStore()
   
@@ -38,7 +37,6 @@ function SessionManager() {
   )
 }
 
-
 function SidePanel() {
   const { addSession, updateActiveSession, resetActiveSession, deleteSession } = useStore()
   
@@ -46,10 +44,10 @@ function SidePanel() {
   const activeSession = useMemo(() => sessions.find(s => s.id === activeSessionId), [sessions, activeSessionId]);
 
   const [topic, setTopic] = useState("")
-  // 【核心变更】为优化请求添加本地状态
   const [refinementRequest, setRefinementRequest] = useState("");
   const [isRefining, setIsRefining] = useState(false);
-
+  const [selectedArticles, setSelectedArticles] = useState<Set<string>>(new Set());
+  
   const [validationError, setValidationError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -63,20 +61,18 @@ function SidePanel() {
   }, [])
   
   useEffect(() => {
-    setTopic(activeSession?.topic || "")
-    setValidationError(null)
-    // 当会话变化时，重置优化请求文本框和加载状态
+    setTopic(activeSession?.topic || "");
+    setValidationError(null);
     setRefinementRequest("");
     setIsRefining(false);
-  }, [activeSession])
+    setSelectedArticles(new Set());
+  }, [activeSession]);
 
-  // 当全局loading状态结束后，确保本地的isRefining也结束
   useEffect(() => {
     if (!activeSession?.loading) {
         setIsRefining(false);
     }
   }, [activeSession?.loading]);
-
 
   const handleStart = () => {
     if (!topic.trim()) {
@@ -85,7 +81,6 @@ function SidePanel() {
     }
     setValidationError(null);
     let currentSessionId = activeSession?.id;
-
     if (!currentSessionId || activeSession.topic === "未命名研究") {
       currentSessionId = addSession(topic);
     } else {
@@ -115,23 +110,22 @@ function SidePanel() {
   };
 
   const handleConfirmPlan = () => {
-    if(!activeSession) return;
-    updateActiveSession({ loading: true });
-    chrome.runtime.sendMessage({ type: "EXECUTE_SEARCH", plan: activeSession.researchPlan, sessionId: activeSession.id });
+    if(!activeSession || !activeSession.researchPlan) return;
+    updateActiveSession({ loading: true, error: null });
+    chrome.runtime.sendMessage({
+      type: "EXECUTE_SEARCH",
+      plan: activeSession.researchPlan,
+      sessionId: activeSession.id
+    });
   };
   
-  // 【核心变更】处理优化请求的函数
   const handleRequestRefinement = () => {
     if (!refinementRequest.trim() || !activeSession) {
       alert("请输入您的修改意见。");
       return;
     }
-    setIsRefining(true); // 立即提供UI反馈
-    chrome.runtime.sendMessage({
-      type: "REFINE_PLAN",
-      sessionId: activeSession.id,
-      feedback: refinementRequest
-    });
+    setIsRefining(true);
+    chrome.runtime.sendMessage({ type: "REFINE_PLAN", sessionId: activeSession.id, feedback: refinementRequest });
   };
 
   const handleDeleteCurrentSession = () => {
@@ -140,14 +134,33 @@ function SidePanel() {
     }
   }
 
+  const handleArticleSelection = (pmid: string) => {
+    setSelectedArticles(prevSelected => {
+      const newSelected = new Set(prevSelected);
+      if (newSelected.has(pmid)) {
+        newSelected.delete(pmid);
+      } else {
+        newSelected.add(pmid);
+      }
+      return newSelected;
+    });
+  };
+
+  const handleGenerateReport = () => {
+    const articlesToProcess = activeSession?.scoredAbstracts.filter(a => selectedArticles.has(a.pmid));
+    if (!articlesToProcess || articlesToProcess.length === 0) {
+      alert("请至少选择一篇文章。");
+      return;
+    }
+    console.log("Requesting to generate report for these articles:", articlesToProcess);
+    alert("生成报告功能（第三阶段）待实现！");
+  };
+
   const renderInitialView = () => (
     <div>
       <h3>您想研究什么？</h3>
       <p style={styles.description}>选择一个已有研究，或在下方输入新主题开始。</p>
-      <textarea
-        value={topic} onChange={(e) => { setTopic(e.target.value); if (validationError) setValidationError(null); }}
-        placeholder="例如：肠道菌群与抑郁症的最新研究进展" style={{ ...styles.textarea, ...(validationError ? styles.inputError : {}) }}
-      />
+      <textarea value={topic} onChange={(e) => { setTopic(e.target.value); if (validationError) setValidationError(null); }} placeholder="例如：肠道菌群与抑郁症的最新研究进展" style={{ ...styles.textarea, ...(validationError ? styles.inputError : {}) }} />
       {validationError && <p style={styles.errorText}>{validationError}</p>}
       <button onClick={handleStart} disabled={activeSession?.loading} style={{...styles.button, ...(activeSession?.loading ? styles.buttonDisabled : {})}}>
         {activeSession?.loading ? "正在规划..." : (activeSession ? "更新并开始研究" : "开始新研究")}
@@ -159,12 +172,7 @@ function SidePanel() {
     <div>
       <h3>研究计划协商</h3>
       <p style={styles.description}>AI为您起草了以下计划。您可以直接编辑，或在下方通过对话让AI帮您修改。</p>
-      
-      <div style={{ marginTop: '15px' }}>
-        <label style={styles.label}>AI 提出的澄清问题 (供您参考)</label>
-        <p style={styles.clarification}>{plan.clarification}</p>
-      </div>
-
+      <div style={{ marginTop: '15px' }}><label style={styles.label}>AI 提出的澄清问题 (供您参考)</label><p style={styles.clarification}>{plan.clarification}</p></div>
       {plan.subQuestions.map((sq) => (
         <div key={sq.id} style={styles.planCard}>
           <button onClick={() => deleteSubQuestion(sq.id)} style={styles.deleteButton} title="删除此子问题">×</button>
@@ -175,21 +183,11 @@ function SidePanel() {
         </div>
       ))}
       <button onClick={addSubQuestion} style={{...styles.buttonSecondary, marginTop: '10px'}}>+ 手动添加子问题</button>
-
-      {/* 【核心变更】新增对话式优化UI */}
-      <div style={styles.refinementBox}>
-        <h4 style={styles.label}>与AI对话以优化计划</h4>
-        <textarea
-          value={refinementRequest}
-          onChange={(e) => setRefinementRequest(e.target.value)}
-          placeholder="例如：请合并关于治疗的两个问题。再增加一个关于副作用的子问题。"
-          style={styles.textarea}
-        />
+      <div style={styles.refinementBox}><h4 style={styles.label}>与AI对话以优化计划</h4><textarea value={refinementRequest} onChange={(e) => setRefinementRequest(e.target.value)} placeholder="例如：请合并关于治疗的两个问题。再增加一个关于副作用的子问题。" style={styles.textarea}/>
         <button onClick={handleRequestRefinement} disabled={isRefining || activeSession?.loading} style={{...styles.button, ...( (isRefining || activeSession?.loading) ? styles.buttonDisabled : {})}}>
           {isRefining ? "正在思考..." : "发送修改意见给AI"}
         </button>
       </div>
-
       <hr style={{border: 'none', borderTop: '1px solid #eee', margin: '20px 0'}}/>
       <button onClick={handleConfirmPlan} disabled={activeSession?.loading} style={{...styles.button, backgroundColor: '#28a745'}}>
           {activeSession?.loading ? "..." : "计划确认，开始检索文献"}
@@ -197,18 +195,47 @@ function SidePanel() {
       <button onClick={resetActiveSession} style={{...styles.buttonSecondary, backgroundColor: '#6c757d'}}>重置研究</button>
     </div>
   )
+  
+  const renderScreeningResults = (scoredAbstracts: ScoredArticle[]) => (
+    <div>
+        <h3>文献评估结果</h3>
+        <p style={styles.description}>AI已为您评估了相关文献。请勾选您认为最值得精读的文章（建议3-5篇）。</p>
+        <div style={styles.articleList}>
+          {scoredAbstracts.map((article) => (
+            <div key={article.pmid} style={styles.articleItem}>
+              <div style={{ display: 'flex', alignItems: 'flex-start' }}><input type="checkbox" style={{ marginRight: '10px', marginTop: '5px' }} checked={selectedArticles.has(article.pmid)} onChange={() => handleArticleSelection(article.pmid)} />
+                <div style={{ flex: 1 }}>
+                  <h4 style={styles.articleTitle}>{article.title}</h4>
+<p style={styles.articleMeta}>
+  <strong>PMID:</strong> <a href={`https://pubmed.ncbi.nlm.nih.gov/${article.pmid}/`} target="_blank" rel="noopener noreferrer">{article.pmid}</a>
+</p>
+                  <p style={{...styles.articleMeta, fontStyle: 'italic', color: '#007bff' }}><strong>AI评分: {article.score}/10</strong> - {article.reason}</p>
+                  <details style={styles.articleDetails}><summary>查看摘要</summary><p style={styles.articleAbstract}>{article.abstract}</p></details>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <button onClick={handleGenerateReport} disabled={selectedArticles.size === 0} style={{...styles.button, ...((selectedArticles.size === 0) ? styles.buttonDisabled : {})}}>
+          {`获取全文并生成报告 (${selectedArticles.size})`}
+        </button>
+    </div>
+  );
 
   const renderContent = () => {
     if (!activeSession) return renderInitialView();
-    const { stage, loading, error, researchPlan } = activeSession;
+    const { stage, loading, error, researchPlan, scoredAbstracts } = activeSession;
     if (error) return (<div style={styles.errorBox}><h4>发生错误</h4><p>{error}</p><button onClick={resetActiveSession} style={styles.button}>重试</button></div>);
-    if (loading && !isRefining) return (<div style={styles.loadingBox}><p>{ {PLANNING: "AI正在为您规划研究方向...", SCREENING: "正在检索文献...", SYNTHESIZING: "正在撰写报告..."}[stage] || "AI 正在工作中..."}</p></div>);
-
+    if (loading && !isRefining) {
+      const messages = {PLANNING: "AI正在为您规划研究方向...", SCREENING: "正在检索PubMed并让AI评估摘要，请稍候...", SYNTHESIZING: "正在撰写报告..."}
+      return (<div style={styles.loadingBox}><p>{messages[stage] || "AI 正在工作中..."}</p></div>);
+    }
     switch (stage) {
       case 'IDLE':
       case 'PLANNING':
         return renderInitialView();
       case 'SCREENING':
+        if (scoredAbstracts && scoredAbstracts.length > 0) { return renderScreeningResults(scoredAbstracts); }
         return researchPlan ? renderResearchPlan(researchPlan) : renderInitialView();
       case 'SYNTHESIZING': case 'DONE':
         return <p>后续阶段待实现</p>;
@@ -230,7 +257,6 @@ function SidePanel() {
     </div>
   )
 }
-
 
 const styles: { [key: string]: React.CSSProperties } = {
   container: { display: 'flex', flexDirection: 'column', height: '100vh', fontFamily: "sans-serif" },
@@ -254,7 +280,13 @@ const styles: { [key: string]: React.CSSProperties } = {
   deleteButton: { position: 'absolute', top: '5px', right: '5px', background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#aaa', padding: '0 5px', lineHeight: '1' },
   label: { fontWeight: 'bold', display: 'block', fontSize: '14px', marginBottom: '5px' },
   clarification: { fontStyle: 'italic', color: '#555', background: '#f8f9fa', padding: '10px', borderRadius: '5px', border: '1px solid #eee' },
-  refinementBox: { marginTop: '25px', padding: '15px', border: '1px dashed #007bff', borderRadius: '8px', backgroundColor: 'rgba(0, 123, 255, 0.05)'}
-}
+  refinementBox: { marginTop: '25px', padding: '15px', border: '1px dashed #007bff', borderRadius: '8px', backgroundColor: 'rgba(0, 123, 255, 0.05)'},
+  articleList: { maxHeight: '55vh', overflowY: 'auto', border: '1px solid #eee', padding: '5px', borderRadius: '5px', marginTop: '15px' },
+  articleItem: { borderBottom: '1px solid #eee', padding: '10px', transition: 'background-color 0.2s' },
+  articleTitle: { margin: 0, fontSize: '14px', fontWeight: 'bold' },
+  articleMeta: { margin: '5px 0', fontSize: '12px', color: '#333' },
+  articleDetails: { marginTop: '8px', fontSize: '12px' },
+  articleAbstract: { margin: '5px 0', paddingLeft: '10px', borderLeft: '3px solid #eee', color: '#555', lineHeight: 1.5, whiteSpace: 'pre-wrap' },
+};
 
-export default SidePanel
+export default SidePanel;
