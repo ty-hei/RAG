@@ -1,26 +1,23 @@
-// ty-hei/rag/RAG-a5f2999dcbcb56fd0b4be65925d4f800bb62e21e/background.ts
+// background.ts
 import { Storage } from "@plasmohq/storage"
+import { v4 as uuidv4 } from 'uuid';
 
 import { callLlm } from "./lib/llm"
-import { researchStrategistPrompt } from "./lib/prompts"
+import { researchStrategistPrompt, refinePlanPrompt } from "./lib/prompts"
 import { useStore } from "./lib/store"
-import type { LLMConfig, ResearchPlan } from "./lib/types"
+import type { LLMConfig, ResearchPlan, ResearchSession, SubQuestion } from "./lib/types"
 
-// 当插件安装时运行
 chrome.runtime.onInstalled.addListener(() => {
   console.log("PubMed RAG Assistant installed.")
 })
 
-// 设置点击插件图标时打开侧边栏
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch((error) => console.error(error))
 
-// 监听标签页更新事件，以便在用户导航到 PubMed 时启用侧边栏图标
 chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   if (!tab.url) return
-  if (info.status !== "complete") return // 确保页面加载完成后再操作
-
+  if (info.status !== "complete") return 
   const url = new URL(tab.url)
   if (url.origin === "https://pubmed.ncbi.nlm.nih.gov") {
     await chrome.sidePanel.setOptions({
@@ -29,7 +26,6 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
       enabled: true
     })
   } else {
-    // 在其他网站禁用侧边栏
     await chrome.sidePanel.setOptions({
       tabId,
       enabled: false
@@ -37,23 +33,18 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   }
 })
 
-// 全局消息监听器，处理来自UI的事件
 chrome.runtime.onMessage.addListener(async (message) => {
   if (message.type === "START_RESEARCH") {
-    await handleStartResearch(message.topic)
+    await handleStartResearch(message.topic, message.sessionId)
   }
-  // 在后续里程碑中添加对其它消息的处理
-  // if (message.type === "EXECUTE_SEARCH") { ... }
-  // if (message.type === "GET_FULL_TEXT_AND_SYNTHESIZE") { ... }
+  // 【核心变更】添加新的消息监听
+  if (message.type === "REFINE_PLAN") {
+    await handleRefinePlan(message.sessionId, message.feedback);
+  }
 })
 
-/**
- * 向活动的侧边栏发送消息，并优雅地处理无接收者的情况。
- * @param message 要发送的消息
- */
 const notifySidePanel = (message: any) => {
   chrome.runtime.sendMessage(message).catch((err) => {
-    // 如果没有侧边栏打开来接收消息，会产生一个错误，这是正常现象，可以忽略。
     if (err.message.includes("Could not establish connection")) {
       // Silently ignore.
     } else {
@@ -63,64 +54,99 @@ const notifySidePanel = (message: any) => {
 }
 
 /**
- * 【核心逻辑】处理研究启动请求
- * @param topic 用户输入的研究主题
+ * 确保从LLM返回的计划中的每个子问题都有一个唯一的ID。
+ * AI可能会忘记或生成重复/空的ID。
  */
-async function handleStartResearch(topic: string) {
-  useStore.setState({
-    loading: true,
-    stage: "PLANNING",
-    topic: topic,
-    error: null
-  })
+const ensureSubQuestionIds = (plan: ResearchPlan): ResearchPlan => {
+  const seenIds = new Set<string>();
+  const updatedSubQuestions = plan.subQuestions.map(sq => {
+    let newId = sq.id;
+    if (!newId || seenIds.has(newId)) {
+      newId = uuidv4();
+    }
+    seenIds.add(newId);
+    return { ...sq, id: newId };
+  });
+  return { ...plan, subQuestions: updatedSubQuestions };
+}
+
+
+async function handleStartResearch(topic: string, sessionId: string) {
+  const { updateSessionById } = useStore.getState();
+  await useStore.persist.rehydrate();
+  
+  updateSessionById(sessionId, { loading: true, stage: "PLANNING", topic: topic, error: null });
 
   try {
     const storage = new Storage({ area: "local" })
     const config = await storage.get<LLMConfig>("llmConfig")
-
-    if (!config?.apiKey) {
-      throw new Error("API密钥未配置。请在设置页面中设置。")
-    }
+    if (!config?.apiKey) throw new Error("API密钥未配置。请在设置页面中设置。")
 
     const prompt = researchStrategistPrompt(topic)
-    console.log("Calling LLM for research plan using fast model...")
-    const llmResponse = await callLlm(
-      prompt,
-      config,
-      config.fastModel,
-      "json"
-    )
+    console.log("Calling LLM for research plan...")
+    const llmResponse = await callLlm(prompt, config, config.fastModel, "json")
     
-    const cleanedResponse = llmResponse
-      .trim()
-      .replace(/^```json\s*/, "")
-      .replace(/\s*```$/, "")
-    
-    const plan: ResearchPlan = JSON.parse(cleanedResponse)
+    const cleanedResponse = llmResponse.trim().replace(/^```json\s*/, "").replace(/\s*```$/, "")
+    let plan: ResearchPlan = JSON.parse(cleanedResponse);
+    plan = ensureSubQuestionIds(plan); // 确保ID唯一
 
-    useStore.setState({ researchPlan: plan, stage: "SCREENING", loading: false })
+    updateSessionById(sessionId, { researchPlan: plan, stage: "SCREENING", loading: false });
     console.log("Research plan generated:", plan)
     
-    // 【核心变更】通知侧边栏状态已更新
     notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" })
 
   } catch (err) {
     console.error("Error during research planning:", err)
-    const errorMessage =
-      err instanceof SyntaxError
-        ? "无法解析AI模型的返回结果，请稍后重试。"
-        : err.message
-    useStore.setState({ error: errorMessage, loading: false, stage: "IDLE" })
-
-    // 【核心变更】即使失败，也要通知侧边栏更新状态以显示错误信息
+    const errorMessage = err instanceof SyntaxError ? "无法解析AI模型的返回结果，请稍后重试。" : err.message
+    updateSessionById(sessionId, { error: errorMessage, loading: false, stage: "IDLE" });
     notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" })
   }
 }
 
-// 保留此监听器以确保在PubMed页面点击图标总能打开侧边栏
+// 【核心变更】新增处理计划优化请求的函数
+async function handleRefinePlan(sessionId: string, feedback: string) {
+  const { updateSessionById, sessions } = useStore.getState();
+  await useStore.persist.rehydrate();
+
+  const currentSession = useStore.getState().sessions.find(s => s.id === sessionId);
+
+  if (!currentSession || !currentSession.researchPlan) {
+    console.error("Refinement failed: No active session or research plan found.");
+    updateSessionById(sessionId, { error: "无法优化计划：未找到当前研究计划。", loading: false });
+    return;
+  }
+
+  updateSessionById(sessionId, { loading: true, error: null });
+
+  try {
+    const storage = new Storage({ area: "local" })
+    const config = await storage.get<LLMConfig>("llmConfig");
+    if (!config?.apiKey) throw new Error("API密钥未配置。请在设置页面中设置。")
+
+    const prompt = refinePlanPrompt(currentSession.topic, currentSession.researchPlan, feedback);
+    console.log("Calling LLM to refine research plan...");
+    const llmResponse = await callLlm(prompt, config, config.fastModel, "json");
+    
+    const cleanedResponse = llmResponse.trim().replace(/^```json\s*/, "").replace(/\s*```$/, "");
+    let refinedPlan: ResearchPlan = JSON.parse(cleanedResponse);
+    refinedPlan = ensureSubQuestionIds(refinedPlan); // 再次确保ID的唯一性
+
+    updateSessionById(sessionId, { researchPlan: refinedPlan, loading: false });
+    console.log("Research plan refined:", refinedPlan);
+
+    notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
+
+  } catch (err) {
+    console.error("Error during plan refinement:", err);
+    const errorMessage = err instanceof SyntaxError ? "无法解析AI模型的返回结果，请稍后重试。" : err.message;
+    updateSessionById(sessionId, { error: errorMessage, loading: false });
+    notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
+  }
+}
+
+
 chrome.action.onClicked.addListener(async (tab) => {
   if (!tab.url) return
-
   const url = new URL(tab.url)
   if (url.origin === "https://pubmed.ncbi.nlm.nih.gov") {
     await chrome.sidePanel.open({ tabId: tab.id! })

@@ -1,65 +1,120 @@
-// ty-hei/rag/RAG-a5f2999dcbcb56fd0b4be65925d4f800bb62e21e/lib/store.ts
+// lib/store.ts
 import { create } from "zustand"
 import { createJSONStorage, persist } from "zustand/middleware"
 import { Storage } from "@plasmohq/storage"
-import type { AppState } from "./types"
+import type { AppState, ResearchSession } from "./types"
 
-// 创建一个基于 chrome.storage.local 的存储实例
-// 这将确保 background, sidepanel, options 等所有部分共享同一个数据源
 const chromeStorage = new Storage({
   area: "local"
 })
 
-// 为 Zustand 的 persist 中间件创建一个兼容的存储适配器
 const zustandChromeStorage = {
-  getItem: async (name: string): Promise<string | null> => {
-    // 从 chrome.storage 中获取数据
+  getItem: async (name:string): Promise<string | null> => {
     return (await chromeStorage.get(name)) || null
   },
-  setItem: async (name: string, value: string): Promise<void> => {
-    // 将数据存入 chrome.storage
+  setItem: async (name:string, value:string): Promise<void> => {
     await chromeStorage.set(name, value)
   },
-  removeItem: async (name: string): Promise<void> => {
-    // 从 chrome.storage 中移除数据
+  removeItem: async (name:string): Promise<void> => {
     await chromeStorage.remove(name)
   }
 }
 
 export const useStore = create<AppState>()(
   persist(
-    (set) => ({
-      stage: "IDLE",
-      topic: "",
-      researchPlan: null,
-      scoredAbstracts: [],
-      finalReport: "",
-      loading: false,
-      error: null,
+    (set, get) => ({
+      sessions: [],
+      activeSessionId: null,
 
-      setStage: (stage) => set({ stage }),
-      setTopic: (topic) => set({ topic }),
-      setResearchPlan: (plan) => set({ researchPlan: plan }),
-      setScoredAbstracts: (abstracts) => set({ scoredAbstracts: abstracts }),
-      setFinalReport: (report) => set({ finalReport: report }),
-      setLoading: (loading) => set({ loading }),
-      setError: (error) => set({ error }),
-
-      reset: () =>
-        set({
+      getActiveSession: () => {
+        const { sessions, activeSessionId } = get()
+        return sessions.find((s) => s.id === activeSessionId) || null
+      },
+      
+      addSession: (topic: string) => {
+        const newSession: ResearchSession = {
+          id: Date.now().toString(),
+          name: topic.length > 50 ? topic.substring(0, 47) + '...' : topic,
+          createdAt: Date.now(),
           stage: "IDLE",
-          topic: "",
+          topic: topic,
           researchPlan: null,
           scoredAbstracts: [],
           finalReport: "",
           loading: false,
-          error: null
+          error: null,
+        }
+        set((state) => ({
+          sessions: [...state.sessions, newSession],
+          activeSessionId: newSession.id
+        }));
+        return newSession.id;
+      },
+
+      switchSession: (sessionId: string | null) => {
+        set({ activeSessionId: sessionId })
+      },
+      
+      deleteSession: (sessionId: string) => {
+        set((state) => {
+          const newSessions = state.sessions.filter(s => s.id !== sessionId);
+          let newActiveId = state.activeSessionId;
+          if(state.activeSessionId === sessionId) {
+            newActiveId = newSessions.length > 0 ? newSessions[0].id : null;
+          }
+          return { sessions: newSessions, activeSessionId: newActiveId };
         })
+      },
+      
+      renameSession: (sessionId: string, newName: string) => {
+        set(state => ({
+          sessions: state.sessions.map(s => s.id === sessionId ? {...s, name: newName} : s)
+        }))
+      },
+
+      updateActiveSession: (update: Partial<Omit<ResearchSession, 'id' | 'createdAt'>>) => {
+        set((state) => ({
+          sessions: state.sessions.map((session) =>
+            session.id === state.activeSessionId
+              ? { ...session, ...update }
+              : session
+          )
+        }))
+      },
+      
+      // 【核心变更】实现新的action
+      updateSessionById: (sessionId: string, update: Partial<Omit<ResearchSession, 'id' | 'createdAt'>>) => {
+        set((state) => ({
+          sessions: state.sessions.map((session) =>
+            session.id === sessionId
+              ? { ...session, ...update }
+              : session
+          )
+        }))
+      },
+
+      resetActiveSession: () => {
+        set((state) => ({
+          sessions: state.sessions.map((session) => {
+            if (session.id === state.activeSessionId) {
+              return {
+                ...session,
+                stage: "IDLE",
+                researchPlan: null,
+                scoredAbstracts: [],
+                finalReport: "",
+                loading: false,
+                error: null
+              };
+            }
+            return session;
+          })
+        }));
+      }
+
     }),
     {
-      name: "pubmed-rag-storage", // 存储的键名
-      // 【核心变更】指定使用我们自定义的、基于 chrome.storage 的存储引擎
-      // createJSONStorage 会自动处理 JSON 的序列化和反序列化
+      name: "pubmed-rag-storage-v2",
       storage: createJSONStorage(() => zustandChromeStorage)
     }
   )

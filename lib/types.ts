@@ -1,18 +1,20 @@
 // lib/types.ts
 
+// 单个研究任务的阶段
 export type Stage = 'IDLE' | 'PLANNING' | 'SCREENING' | 'SYNTHESIZING' | 'DONE';
 
+// LLM 配置保持不变
 export interface LLMConfig {
   provider: 'gemini' | 'openai';
   apiKey: string;
   apiEndpoint?: string;
-  // 更新：区分快速和增强模型
   fastModel: string;
   smartModel: string;
   fetchRateLimit: number;
 }
 
 export interface SubQuestion {
+  id: string; // 新增：为每个子问题添加唯一ID，便于编辑和删除
   question: string;
   keywords: string[];
 }
@@ -22,36 +24,42 @@ export interface ResearchPlan {
   clarification: string;
 }
 
-// 新增：为检索到的文献摘要定义一个基本类型
 export interface FetchedArticle {
   pmid: string;
   title: string;
   abstract: string;
 }
 
-// 新增：为经过AI评分的文献定义类型
 export interface ScoredArticle extends FetchedArticle {
   score: number;
   reason: string;
 }
 
-export interface AppState {
+export interface ResearchSession {
+  id: string; // 唯一ID，例如时间戳
+  name: string; // 会话名称，默认为用户输入的topic
+  createdAt: number; // 创建时间
   stage: Stage;
   topic: string;
   researchPlan: ResearchPlan | null;
-  // 更新：使用更具体的类型
-  scoredAbstracts: ScoredArticle[]; 
+  scoredAbstracts: ScoredArticle[];
   finalReport: string;
   loading: boolean;
   error: string | null;
+}
 
-  setStage: (stage: Stage) => void;
-  setTopic: (topic: string) => void;
-  setResearchPlan: (plan: ResearchPlan) => void;
-  // 更新：使用更具体的类型
-  setScoredAbstracts: (abstracts: ScoredArticle[]) => void;
-  setFinalReport: (report: string) => void;
-  setLoading: (loading: boolean) => void;
-  setError: (error: string | null) => void;
-  reset: () => void;
+export interface AppState {
+  sessions: ResearchSession[];
+  activeSessionId: string | null;
+
+  // 新的Action，用于管理会话
+  addSession: (topic: string) => string;
+  switchSession: (sessionId: string | null) => void;
+  deleteSession: (sessionId: string) => void;
+  renameSession: (sessionId: string, newName: string) => void;
+  updateActiveSession: (update: Partial<Omit<ResearchSession, 'id' | 'createdAt'>>) => void;
+  // 【核心变更】新增一个更可靠的、供后台脚本使用的action
+  updateSessionById: (sessionId: string, update: Partial<Omit<ResearchSession, 'id' | 'createdAt'>>) => void;
+  getActiveSession: () => ResearchSession | null;
+  resetActiveSession: () => void;
 }

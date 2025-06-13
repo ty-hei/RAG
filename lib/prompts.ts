@@ -1,25 +1,29 @@
 // lib/prompts.ts
 
 import type { FetchedArticle, ResearchPlan } from "./types";
+import { v4 as uuidv4 } from 'uuid';
 
+// 【核心变更】移除"3 to 5"的数量限制，让AI自行决定合适的数量
 export const researchStrategistPrompt = (topic: string): string => `
-  You are a highly skilled research strategist specializing in biomedical fields. Your task is to break down a user's broad research interest into a structured, actionable research plan.
+  You are a helpful and collaborative research strategist specializing in biomedical fields. Your goal is to work with the user to break down their broad research interest into a structured, actionable research plan.
 
   The user's topic is: "${topic}"
 
-  Please perform the following steps:
-  1.  Decompose the user's topic into 3 to 5 critical, distinct sub-questions. Each sub-question should represent a key facet of the topic that is worth investigating.
-  2.  For each sub-question, generate a concise list of 3-5 effective PubMed search keywords. These keywords should be a mix of MeSH terms and common phrases, designed to yield relevant results.
-  3.  Formulate a single, insightful clarification question to ask the user. This question should help narrow the focus of the research, for example, by asking about a specific population, intervention, or outcome.
+  Let's start by drafting a plan. Please perform the following steps:
+  1.  Decompose the user's topic into a suitable number of critical, distinct sub-questions. Frame these as questions we want to answer. Each should represent a key facet of the topic.
+  2.  For each sub-question, generate a concise list of 3-5 effective PubMed search keywords. These should be a mix of MeSH terms and common phrases.
+  3.  Formulate a single, insightful clarification question to ask the user. This will help us refine the focus of the research together.
 
   Your final output MUST be a single, valid JSON object, with no markdown formatting or other text outside of the JSON. The JSON object should have the following structure:
   {
     "subQuestions": [
       {
+        "id": "placeholder_id_1",
         "question": "The first sub-question text.",
         "keywords": ["keyword1", "keyword2", "keyword3"]
       },
       {
+        "id": "placeholder_id_2",
         "question": "The second sub-question text.",
         "keywords": ["keywordA", "keywordB"]
       }
@@ -27,6 +31,31 @@ export const researchStrategistPrompt = (topic: string): string => `
     "clarification": "The single clarification question to the user."
   }
 `;
+
+// 【核心变更】新增一个用于优化研究计划的Prompt
+export const refinePlanPrompt = (topic: string, currentPlan: ResearchPlan, userFeedback: string): string => `
+  You are a helpful research strategist in an ongoing conversation with a user. You have already proposed an initial research plan, and now the user has provided feedback for refinement.
+
+  **Original Research Topic:** "${topic}"
+
+  **Current Research Plan (in JSON format):**
+  \`\`\`json
+  ${JSON.stringify(currentPlan, null, 2)}
+  \`\`\`
+
+  **User's Feedback and Request for Changes:**
+  "${userFeedback}"
+
+  **Your Task:**
+  Carefully analyze the user's feedback and revise the **ENTIRE** research plan accordingly. You can add, remove, merge, or rephrase sub-questions and their keywords. The goal is to produce a new version of the plan that better aligns with the user's intent.
+
+  **CRITICAL INSTRUCTIONS:**
+  - Your final output MUST be a single, valid JSON object representing the **COMPLETE, UPDATED** research plan.
+  - The structure of the JSON object must be identical to the original plan's structure: { "subQuestions": [...], "clarification": "..." }.
+  - You can update the clarification question if the user's feedback implies a new direction.
+  - Do NOT just output the changes. Output the full, revised plan.
+`;
+
 
 export const literatureReviewerPrompt = (plan: ResearchPlan, articles: FetchedArticle[]): string => `
   You are a meticulous medical literature reviewer. Your task is to evaluate a list of article abstracts based on their relevance to a given research plan.
@@ -62,7 +91,6 @@ export const literatureReviewerPrompt = (plan: ResearchPlan, articles: FetchedAr
   ]
 `;
 
-// 新增：研究综述员Prompt
 export const synthesisWriterPrompt = (plan: ResearchPlan, fullTexts: { pmid: string, text: string }[]): string => `
   You are a top-tier medical researcher and writer. Your task is to synthesize the information from the provided full-text articles into a cohesive, structured, and insightful literature review.
 
