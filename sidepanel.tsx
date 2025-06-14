@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from "react"
 import { useStore } from "./lib/store"
-import type { ResearchSession, Stage, FetchedArticle, ScoredArticle } from "./lib/types"
+import type { ResearchSession, Stage, FetchedArticle, ScoredArticle, ClinicalTrial } from "./lib/types"
 
 // #region --- Helper Components ---
 
@@ -373,6 +373,41 @@ const ScreeningResultsSection: React.FC<{ session: ResearchSession }> = ({ sessi
   );
 };
 
+const ClinicalTrialsSection: React.FC<{ session: ResearchSession }> = ({ session }) => {
+  if (!session.clinicalTrials || session.clinicalTrials.length === 0) {
+    return null;
+  }
+
+  return (
+    <Section
+      title={`临床试验结果 (${session.clinicalTrials.length})`}
+      stage="SCREENING"
+      completedStages={[]}
+    >
+      <p style={styles.description}>
+        除了学术文献，AI还为您检索到了以下相关的临床试验，以提供更全面的研究背景。
+      </p>
+      <div style={styles.articleList}>
+        {session.clinicalTrials.map((trial) => (
+          <div key={trial.nctId} style={styles.articleItem}>
+            <h4 style={styles.articleTitle}>{trial.title}</h4>
+            <p style={{...styles.articleMeta}}><strong>ID:</strong> {trial.nctId} | <strong>状态:</strong> {trial.status}</p>
+            <p style={{...styles.articleMeta}}><strong>研究病症:</strong> {trial.conditions.join(', ')}</p>
+            <details style={styles.articleDetails}>
+              <summary>查看简介和干预措施</summary>
+              <p style={styles.articleAbstract}><strong>简介:</strong> {trial.summary}</p>
+              <p style={{...styles.articleAbstract, marginTop: '5px'}}><strong>干预措施:</strong> {trial.interventions.join(', ')}</p>
+            </details>
+            <a href={trial.url} target="_blank" rel="noopener noreferrer" style={{fontSize: '12px'}}>
+              在 ClinicalTrials.gov 上查看详情
+            </a>
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+};
+
 const FullTextGatheringSection: React.FC<{ session: ResearchSession }> = ({ session }) => {
   const { updateActiveSession } = useStore();
   const [copyStatus, setCopyStatus] = useState("复制所有全文");
@@ -498,7 +533,7 @@ function SidePanel() {
   
   useEffect(() => {
     const handleMessage = (message: any) => {
-      if (message.type === "STATE_UPDATED_FROM_BACKGROUND") {
+      if (message.type === "STATE_UPDATED_FROM_BACKGROUND" || message.type === "ADD_TO_LOG") {
         useStore.persist.rehydrate()
       }
     }
@@ -561,6 +596,7 @@ function SidePanel() {
               <>
                 <ResearchPlanSection session={activeSession} />
                 <ScreeningResultsSection session={activeSession} />
+                <ClinicalTrialsSection session={activeSession} />
                 <FullTextGatheringSection session={activeSession} />
                 {activeSession.stage === 'SYNTHESIZING' && <div style={styles.loadingBox}><p>AI正在阅读全文并撰写报告，这可能需要几分钟...</p></div>}
                 <FinalReportSection session={activeSession} />

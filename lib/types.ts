@@ -2,6 +2,17 @@
 
 export type Stage = 'IDLE' | 'PLANNING' | 'SCREENING' | 'GATHERING' | 'SYNTHESIZING' | 'DONE';
 
+// 【新增】临床试验的数据结构
+export interface ClinicalTrial {
+  nctId: string;
+  title: string;
+  status: string;
+  summary: string;
+  conditions: string[];
+  interventions: string[];
+  url: string;
+}
+
 export interface LLMConfig {
   provider: 'gemini' | 'openai';
   apiKey: string;
@@ -50,8 +61,9 @@ export interface ResearchSession {
   loading: boolean;
   error: string | null;
   log: string[];
-  // 【新增】用于追踪全文抓取阶段的进度，支持跳过功能
   gatheringIndex: number;
+  // 【新增】用于存储临床试验结果
+  clinicalTrials: ClinicalTrial[];
 }
 
 export interface AppState {

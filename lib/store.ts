@@ -50,7 +50,8 @@ export const useStore = create<AppState>()(
           loading: false,
           error: null,
           log: [`[${new Date().toLocaleTimeString()}] 会话已创建: "${topic}"`],
-          gatheringIndex: 0, // 【新增】
+          gatheringIndex: 0,
+          clinicalTrials: [], // 【新增】
         }
         set((state) => ({
           sessions: [...state.sessions, newSession],
@@ -118,7 +119,8 @@ export const useStore = create<AppState>()(
                 loading: false,
                 error: null,
                 log: [`[${new Date().toLocaleTimeString()}] 会话已重置.`],
-                gatheringIndex: 0, // 【新增】
+                gatheringIndex: 0,
+                clinicalTrials: [], // 【新增】
               };
             }
             return session;
