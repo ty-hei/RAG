@@ -2,8 +2,7 @@
 
 export type Stage = 'IDLE' | 'PLANNING' | 'SCREENING' | 'GATHERING' | 'SYNTHESIZING' | 'DONE';
 
-// 【新增】临床试验的数据结构
-export interface ClinicalTrial {
+export interface FetchedClinicalTrial {
   nctId: string;
   title: string;
   status: string;
@@ -11,6 +10,11 @@ export interface ClinicalTrial {
   conditions: string[];
   interventions: string[];
   url: string;
+}
+
+export interface ScoredClinicalTrial extends FetchedClinicalTrial {
+  score: number;
+  reason: string;
 }
 
 export interface LLMConfig {
@@ -62,8 +66,10 @@ export interface ResearchSession {
   error: string | null;
   log: string[];
   gatheringIndex: number;
-  // 【新增】用于存储临床试验结果
-  clinicalTrials: ClinicalTrial[];
+  clinicalTrials: ScoredClinicalTrial[];
+  lastFailedAction: { type: string; payload: any } | null;
+  // 【新增】用于展示临床试验的检索式
+  clinicalTrialsQuery: string | null;
 }
 
 export interface AppState {

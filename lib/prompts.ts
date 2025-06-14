@@ -1,6 +1,6 @@
 // RAG-main/lib/prompts.ts
 
-import type { FetchedArticle, ResearchPlan } from "./types";
+import type { FetchedArticle, FetchedClinicalTrial, ResearchPlan } from "./types";
 
 export const researchStrategistPrompt = (topic: string): string => `
   You are a helpful and collaborative research strategist specializing in biomedical fields. Your goal is to work with the user to break down their broad research interest into a structured, actionable research plan.
@@ -84,6 +84,39 @@ export const searchRefinerPrompt = (plan: ResearchPlan, articles: FetchedArticle
   - If no new queries are needed, output: { "new_queries": [] }
 `;
 
+// 【新增】用于反思临床试验检索结果的Prompt
+export const clinicalTrialSearchRefinerPrompt = (plan: ResearchPlan, trials: FetchedClinicalTrial[]): string => `
+  You are an expert research analyst. Your task is to determine if the current clinical trial search results adequately cover all aspects of the user's research plan. If not, you must generate new search queries to fill the gaps.
+
+  **Research Plan:**
+  - Main Topic: "${plan.clarification}"
+  - Sub-questions to address:
+    ${plan.subQuestions.map((sq, i) => `${i + 1}. ${sq.question}`).join('\n    ')}
+
+  **Current Clinical Trial Results (${trials.length} trials):**
+  ${trials.map(trial => `
+  <trial>
+    <nctId>${trial.nctId}</nctId>
+    <title>${trial.title}</title>
+    <summary>${trial.summary}</summary>
+    <conditions>${trial.conditions.join(', ')}</conditions>
+  </trial>
+  `).join('\n')}
+
+  **Your Analysis & Task:**
+  1.  Review the sub-questions in the research plan.
+  2.  Review the titles, summaries, and conditions of the trials found so far.
+  3.  Identify any sub-questions that are **poorly covered** or **not covered at all** by the current results.
+  4.  For each identified gap, formulate one or two new, specific, and effective search queries for ClinicalTrials.gov.
+  5.  If you believe the current results are sufficient and all sub-questions are well-covered, return an empty array.
+
+  **CRITICAL INSTRUCTIONS:**
+  - Your final output MUST be a single, valid JSON object, with no markdown formatting or other text outside of the JSON.
+  - The JSON object must have a single key "new_queries" which is an array of strings.
+  - Example output: { "new_queries": ["(metastatic breast cancer) AND (CDK4/6 inhibitor OR palbociclib)", "triple-negative breast cancer immunotherapy"] }
+  - If no new queries are needed, output: { "new_queries": [] }
+`;
+
 export const literatureReviewerPrompt = (plan: ResearchPlan, articles: FetchedArticle[]): string => `
   You are a meticulous medical literature reviewer. Your task is to evaluate a list of article abstracts based on their relevance to a given research plan.
 
@@ -113,6 +146,43 @@ export const literatureReviewerPrompt = (plan: ResearchPlan, articles: FetchedAr
     {
       "pmid": "Another PMID",
       "score": 3,
+      "reason": "Another reason."
+    }
+  ]
+`;
+
+export const clinicalTrialReviewerPrompt = (plan: ResearchPlan, trials: FetchedClinicalTrial[]): string => `
+  You are an expert clinical trial analyst. Your task is to evaluate a list of clinical trials based on their relevance to a given research plan.
+
+  The research plan is as follows:
+  - Main Topic: "${plan.clarification}" 
+  - Sub-questions:
+    ${plan.subQuestions.map(sq => `- ${sq.question}`).join('\n    ')}
+
+  Here are the clinical trials you need to evaluate. Each has a title, summary, conditions, and interventions.
+  ${trials.map(trial => `
+  <trial>
+    <nctId>${trial.nctId}</nctId>
+    <title>${trial.title}</title>
+    <status>${trial.status}</status>
+    <summary>${trial.summary}</summary>
+    <conditions>${trial.conditions.join(', ')}</conditions>
+    <interventions>${trial.interventions.join(', ')}</interventions>
+  </trial>
+  `).join('\n')}
+
+  Please evaluate each trial and provide a relevance score from 1 (not relevant) to 10 (highly relevant). Also, provide a single, concise sentence explaining your reasoning for the score, considering the trial's status, summary, and interventions in relation to the research questions.
+
+  Your final output MUST be a single, valid JSON object, with no markdown formatting or other text outside of the JSON. The JSON object should be an array, where each item corresponds to a trial and has the following structure:
+  [
+    {
+      "nctId": "The NCTId of the trial",
+      "score": 9,
+      "reason": "The concise reason for the score."
+    },
+    {
+      "nctId": "Another NCTId",
+      "score": 4,
       "reason": "Another reason."
     }
   ]

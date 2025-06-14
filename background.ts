@@ -4,9 +4,9 @@ import { Storage } from "@plasmohq/storage"
 import { v4 as uuidv4 } from 'uuid';
 
 import { callLlm } from "./lib/llm"
-import { researchStrategistPrompt, refinePlanPrompt, searchRefinerPrompt, literatureReviewerPrompt, synthesisWriterPrompt } from "./lib/prompts"
+import { researchStrategistPrompt, refinePlanPrompt, searchRefinerPrompt, literatureReviewerPrompt, synthesisWriterPrompt, clinicalTrialReviewerPrompt, clinicalTrialSearchRefinerPrompt } from "./lib/prompts"
 import { useStore } from "./lib/store"
-import type { LLMConfig, ResearchPlan, FetchedArticle, ScoredArticle, ClinicalTrial } from "./lib/types"
+import type { LLMConfig, ResearchPlan, FetchedArticle, ScoredArticle, FetchedClinicalTrial, ScoredClinicalTrial } from "./lib/types"
 
 async function addToLog(sessionId: string, message: string) {
     await useStore.persist.rehydrate();
@@ -62,7 +62,7 @@ async function handleStartResearch(topic: string, sessionId: string) {
   const { updateSessionById } = useStore.getState();
   await useStore.persist.rehydrate();
   await addToLog(sessionId, `研究启动，主题: "${topic}"`);
-  updateSessionById(sessionId, { loading: true, stage: "PLANNING", topic: topic, error: null });
+  updateSessionById(sessionId, { loading: true, stage: "PLANNING", topic: topic, error: null, lastFailedAction: null });
   notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
 
   try {
@@ -83,7 +83,11 @@ async function handleStartResearch(topic: string, sessionId: string) {
   } catch (err) {
     const errorMessage = err instanceof SyntaxError ? "无法解析AI模型的返回结果，请稍后重试。" : err.message
     await addToLog(sessionId, `错误: ${errorMessage}`);
-    updateSessionById(sessionId, { error: errorMessage, loading: false, stage: "IDLE" });
+    updateSessionById(sessionId, { 
+      error: errorMessage, 
+      loading: false, 
+      lastFailedAction: { type: "START_RESEARCH", payload: { topic } }
+    });
   } finally {
     notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   }
@@ -101,7 +105,7 @@ async function handleRefinePlan(sessionId: string, feedback: string) {
   }
   
   await addToLog(sessionId, `收到用户反馈，正在优化计划: "${feedback}"`);
-  updateSessionById(sessionId, { loading: true, error: null });
+  updateSessionById(sessionId, { loading: true, error: null, lastFailedAction: null });
   notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   
   try {
@@ -120,7 +124,11 @@ async function handleRefinePlan(sessionId: string, feedback: string) {
   } catch (err) {
     const errorMessage = err instanceof SyntaxError ? "无法解析AI模型的返回结果，请稍后重试。" : err.message;
     await addToLog(sessionId, `错误: ${errorMessage}`);
-    updateSessionById(sessionId, { error: errorMessage, loading: false });
+    updateSessionById(sessionId, { 
+      error: errorMessage, 
+      loading: false,
+      lastFailedAction: { type: "REFINE_PLAN", payload: { feedback } }
+    });
   } finally {
       notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   }
@@ -136,7 +144,9 @@ async function handleExecuteSearch(plan: ResearchPlan, sessionId: string) {
     loadingMessage: "正在组合关键词并准备并行检索...",
     stage: "SCREENING",
     error: null,
+    lastFailedAction: null,
     pubmedQuery: null,
+    clinicalTrialsQuery: null,
     rawArticles: [],
     scoredAbstracts: [],
     clinicalTrials: [],
@@ -155,14 +165,19 @@ async function handleExecuteSearch(plan: ResearchPlan, sessionId: string) {
 
     await Promise.all([
       searchPubMed(plan, searchTerm, sessionId),
-      searchClinicalTrials(searchTerm, sessionId)
+      searchClinicalTrials(plan, searchTerm, sessionId)
     ]);
 
     updateSessionById(sessionId, { loading: false, loadingMessage: null });
 
   } catch (err) {
     await addToLog(sessionId, `错误: ${err.message}`);
-    updateSessionById(sessionId, { error: err.message, loading: false, loadingMessage: null });
+    updateSessionById(sessionId, { 
+      error: err.message, 
+      loading: false, 
+      loadingMessage: null,
+      lastFailedAction: { type: "EXECUTE_SEARCH", payload: { plan } }
+    });
   } finally {
     notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   }
@@ -272,34 +287,95 @@ async function searchPubMed(plan: ResearchPlan, searchTerm: string, sessionId: s
     updateSessionById(sessionId, { scoredAbstracts, rawArticles: [] });
 }
 
-async function searchClinicalTrials(searchTerm: string, sessionId: string) {
+// 【变更】重构此函数以支持反思和二次检索
+async function searchClinicalTrials(plan: ResearchPlan, searchTerm: string, sessionId: string) {
     const { updateSessionById } = useStore.getState();
-    await addToLog(sessionId, `[ClinicalTrials.gov] 开始检索...`);
-    updateSessionById(sessionId, { loadingMessage: "正在检索 ClinicalTrials.gov..."});
-    notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
 
-    try {
+    const fetchTrials = async (query: string): Promise<FetchedClinicalTrial[]> => {
         const fields = "NCTId,BriefTitle,OverallStatus,BriefSummary,Condition,InterventionName";
-        const url = `https://clinicaltrials.gov/api/v2/studies?query.term=${encodeURIComponent(searchTerm)}&fields=${fields}&pageSize=15&format=json`;
-        
+        const url = `https://clinicaltrials.gov/api/v2/studies?query.term=${encodeURIComponent(query)}&fields=${fields}&pageSize=20&format=json`;
         const response = await fetch(url);
-        if (!response.ok) throw new Error(`API 请求失败，状态: ${response.status}`);
-        
+        if (!response.ok) throw new Error(`ClinicalTrials.gov API 请求失败，查询: "${query}", 状态: ${response.status}`);
         const data = await response.json();
-        const trials: ClinicalTrial[] = data.studies.map((study: any) => ({
+        return data.studies.map((study: any) => ({
             nctId: study.protocolSection.identificationModule.nctId,
             title: study.protocolSection.identificationModule.briefTitle,
             status: study.protocolSection.statusModule.overallStatus,
             summary: study.protocolSection.descriptionModule.briefSummary,
-            conditions: study.protocolSection.conditionsModule.conditions,
-            interventions: study.protocolSection.armsAndInterventionsModule.interventions.map((i:any) => i.name),
+            conditions: study.protocolSection.conditionsModule?.conditions || [],
+            interventions: study.protocolSection.armsAndInterventionsModule?.interventions?.map((i:any) => i.name) || [],
             url: `https://clinicaltrials.gov/study/${study.protocolSection.identificationModule.nctId}`
         }));
+    };
 
-        await addToLog(sessionId, `[ClinicalTrials.gov] 找到 ${trials.length} 个相关临床试验。`);
-        updateSessionById(sessionId, { clinicalTrials: trials });
+    try {
+        await addToLog(sessionId, `[ClinicalTrials.gov] 开始初步检索...`);
+        updateSessionById(sessionId, { 
+            clinicalTrialsQuery: searchTerm,
+            loadingMessage: "正在检索 ClinicalTrials.gov..."
+        });
+        notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
+
+        let combinedTrials = await fetchTrials(searchTerm);
+        await addToLog(sessionId, `[ClinicalTrials.gov] 初步检索找到 ${combinedTrials.length} 个试验。`);
+        
+        const storage = new Storage({ area: "local" });
+        const config = await storage.get<LLMConfig>("llmConfig");
+        if (!config?.apiKey) throw new Error("[ClinicalTrials.gov] API密钥未配置。");
+
+        if (combinedTrials.length > 0) {
+            await addToLog(sessionId, `[ClinicalTrials.gov] AI 正在反思初步检索结果...`);
+            updateSessionById(sessionId, { loadingMessage: `[ClinicalTrials.gov] AI正在反思 ${combinedTrials.length} 个试验结果...` });
+            
+            const refinerPrompt = clinicalTrialSearchRefinerPrompt(plan, combinedTrials);
+            const llmRefinerResponse = await callLlm(refinerPrompt, config, config.fastModel, "json");
+            const { new_queries }: { new_queries: string[] } = JSON.parse(llmRefinerResponse.trim().replace(/^```json\s*/, "").replace(/\s*```$/, ""));
+            
+            if (new_queries && new_queries.length > 0) {
+                await addToLog(sessionId, `[ClinicalTrials.gov] AI识别到知识缺口，执行 ${new_queries.length} 个补充检索...`);
+                updateSessionById(sessionId, { clinicalTrialsQuery: `${searchTerm}\n\n补充检索:\n- ${new_queries.join('\n- ')}` });
+                const existingNctIdSet = new Set(combinedTrials.map(t => t.nctId));
+
+                for (const query of new_queries) {
+                    await addToLog(sessionId, `[ClinicalTrials.gov] 补充检索: "${query}"`);
+                    const newTrials = await fetchTrials(query);
+                    newTrials.forEach(trial => {
+                        if (!existingNctIdSet.has(trial.nctId)) {
+                            combinedTrials.push(trial);
+                            existingNctIdSet.add(trial.nctId);
+                        }
+                    });
+                }
+                await addToLog(sessionId, `[ClinicalTrials.gov] 补充检索完成，总共找到 ${combinedTrials.length} 个不重复的试验。`);
+            } else {
+                await addToLog(sessionId, "[ClinicalTrials.gov] AI评估认为初步检索结果已足够全面。");
+            }
+        }
+
+        if (combinedTrials.length === 0) {
+            await addToLog(sessionId, `[ClinicalTrials.gov] 未找到相关试验。`);
+            updateSessionById(sessionId, { clinicalTrials: [] });
+            return;
+        }
+
+        await addToLog(sessionId, `[ClinicalTrials.gov] 正在调用 AI 评估最终的 ${combinedTrials.length} 个试验...`);
+        updateSessionById(sessionId, { loadingMessage: `[ClinicalTrials.gov] AI 正在评估 ${combinedTrials.length} 个试验...`});
+        
+        const reviewPrompt = clinicalTrialReviewerPrompt(plan, combinedTrials);
+        const llmReviewResponse = await callLlm(reviewPrompt, config, config.fastModel, "json");
+        const reviews: { nctId: string; score: number; reason: string }[] = JSON.parse(llmReviewResponse.trim().replace(/^```json\s*/, "").replace(/\s*```$/, ""));
+        
+        const scoredTrials: ScoredClinicalTrial[] = combinedTrials.map(trial => {
+            const review = reviews.find(r => r.nctId === trial.nctId);
+            return { ...trial, score: review?.score || 0, reason: review?.reason || "AI未提供评估意见。" };
+        }).sort((a, b) => b.score - a.score);
+
+        await addToLog(sessionId, `[ClinicalTrials.gov] AI 评估完成。`);
+        updateSessionById(sessionId, { clinicalTrials: scoredTrials });
+
     } catch (error) {
-        await addToLog(sessionId, `[ClinicalTrials.gov] 检索失败: ${error.message}`);
+        await addToLog(sessionId, `[ClinicalTrials.gov] 检索或分析失败: ${error.message}`);
+        throw error;
     }
 }
 
@@ -324,6 +400,7 @@ async function handleStartGathering(sessionId: string, articles: ScoredArticle[]
     fullTexts: [],
     loading: false,
     error: null,
+    lastFailedAction: null,
     gatheringIndex: 0, 
   });
   notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
@@ -381,7 +458,7 @@ async function handleSynthesizeReport(sessionId: string) {
   const { updateSessionById, sessions } = useStore.getState();
   await useStore.persist.rehydrate();
   await addToLog(sessionId, "所有全文已就绪，开始生成最终报告...");
-  updateSessionById(sessionId, { stage: 'SYNTHESIZING', loading: true, error: null });
+  updateSessionById(sessionId, { stage: 'SYNTHESIZING', loading: true, error: null, lastFailedAction: null });
   notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   try {
     const session = sessions.find(s => s.id === sessionId);
@@ -400,7 +477,11 @@ async function handleSynthesizeReport(sessionId: string) {
     updateSessionById(sessionId, { finalReport, stage: 'DONE', loading: false });
   } catch (err) {
     await addToLog(sessionId, `错误: 报告合成失败: ${err.message}`);
-    updateSessionById(sessionId, { error: err.message, loading: false });
+    updateSessionById(sessionId, { 
+      error: err.message, 
+      loading: false,
+      lastFailedAction: { type: "SYNTHESIZE_REPORT", payload: {} }
+    });
   } finally {
     notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   }

@@ -1,7 +1,7 @@
 {
   "name": "pubmed-rag-assistant",
   "displayName": "PubMed RAG 智能助理",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "一个将大型语言模型与PubMed研究工作流深度融合的智能研究代理。",
   "author": "Your Name",
   "scripts": {

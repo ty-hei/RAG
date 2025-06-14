@@ -2,9 +2,43 @@
 
 import React, { useState, useEffect, useMemo, useRef } from "react"
 import { useStore } from "./lib/store"
-import type { ResearchSession, Stage, FetchedArticle, ScoredArticle, ClinicalTrial } from "./lib/types"
+import type { ResearchSession, Stage, FetchedArticle, ScoredArticle, ScoredClinicalTrial } from "./lib/types"
 
 // #region --- Helper Components ---
+
+const ErrorRetryComponent: React.FC<{ session: ResearchSession }> = ({ session }) => {
+    const { updateSessionById, resetActiveSession } = useStore();
+
+    if (!session.error) {
+        return null;
+    }
+
+    const handleRetry = () => {
+        if (!session.lastFailedAction) return;
+        const { type, payload } = session.lastFailedAction;
+        updateSessionById(session.id, { error: null, lastFailedAction: null });
+        chrome.runtime.sendMessage({ type, sessionId: session.id, ...payload });
+    };
+
+    const handleReset = () => {
+        if (confirm("您确定要重置这个研究项目吗？这会清除当前进度但保留会话。")) {
+           resetActiveSession();
+        }
+    };
+
+    return (
+        <div style={styles.errorBox}>
+            <h4>发生错误</h4>
+            <p>{session.error}</p>
+            <div style={{ marginTop: '10px', display: 'flex', gap: '10px' }}>
+                {session.lastFailedAction && (
+                    <button onClick={handleRetry} style={{...styles.button, backgroundColor: '#28a745', flex: 1}}>重试</button>
+                )}
+                <button onClick={handleReset} style={{...styles.button, backgroundColor: '#6c757d', flex: 1}}>重置研究</button>
+            </div>
+        </div>
+    );
+};
 
 function SimpleMarkdownViewer({ content }: { content: string }) {
   const [copyStatus, setCopyStatus] = useState('复制报告');
@@ -284,7 +318,7 @@ const ScreeningResultsSection: React.FC<{ session: ResearchSession }> = ({ sessi
   const hasScored = session.scoredAbstracts.length > 0;
   const articles = hasScored ? session.scoredAbstracts : session.rawArticles;
 
-  if (session.loading && articles.length === 0) {
+  if (session.loading && articles.length === 0 && session.clinicalTrials.length === 0) {
     return (
       <Section
         title="第 2 步：文献筛选"
@@ -373,9 +407,28 @@ const ScreeningResultsSection: React.FC<{ session: ResearchSession }> = ({ sessi
   );
 };
 
+// 【变更】更新组件以展示检索策略和AI评分
 const ClinicalTrialsSection: React.FC<{ session: ResearchSession }> = ({ session }) => {
-  if (!session.clinicalTrials || session.clinicalTrials.length === 0) {
+  if (session.clinicalTrials.length === 0 && !session.clinicalTrialsQuery) {
     return null;
+  }
+  
+  if (session.clinicalTrials.length === 0 && session.clinicalTrialsQuery) {
+    return (
+       <Section
+         title={`临床试验结果 (0)`}
+         stage="SCREENING"
+         completedStages={[]}
+       >
+         <details style={styles.details} open>
+             <summary style={styles.summary}>查看本次使用的ClinicalTrials.gov检索式</summary>
+             <div style={styles.queryBox}>
+                 <p style={styles.queryText}>{session.clinicalTrialsQuery}</p>
+             </div>
+         </details>
+         <p style={styles.description}>未找到相关的临床试验。</p>
+       </Section>
+    );
   }
 
   return (
@@ -384,13 +437,25 @@ const ClinicalTrialsSection: React.FC<{ session: ResearchSession }> = ({ session
       stage="SCREENING"
       completedStages={[]}
     >
+      {session.clinicalTrialsQuery && (
+        <details style={styles.details}>
+          <summary style={styles.summary}>查看本次使用的ClinicalTrials.gov检索式</summary>
+          <div style={styles.queryBox}>
+            <p style={styles.queryText}>{session.clinicalTrialsQuery}</p>
+          </div>
+        </details>
+      )}
+      
       <p style={styles.description}>
-        除了学术文献，AI还为您检索到了以下相关的临床试验，以提供更全面的研究背景。
+        AI已为您评估了以下相关的临床试验，以提供更全面的研究背景。
       </p>
       <div style={styles.articleList}>
         {session.clinicalTrials.map((trial) => (
           <div key={trial.nctId} style={styles.articleItem}>
             <h4 style={styles.articleTitle}>{trial.title}</h4>
+            <p style={{ ...styles.articleMeta, fontStyle: 'italic', color: '#007bff' }}>
+                <strong>AI评分: {trial.score}/10</strong> - {trial.reason}
+            </p>
             <p style={{...styles.articleMeta}}><strong>ID:</strong> {trial.nctId} | <strong>状态:</strong> {trial.status}</p>
             <p style={{...styles.articleMeta}}><strong>研究病症:</strong> {trial.conditions.join(', ')}</p>
             <details style={styles.articleDetails}>
@@ -544,9 +609,11 @@ function SidePanel() {
   const handleStartResearch = (topic: string) => {
     let currentSessionId = activeSession?.id;
     if (!currentSessionId || activeSession.topic === "未命名研究") {
-      currentSessionId = addSession(topic);
+      const newSessionId = addSession(topic);
+      chrome.runtime.sendMessage({ type: "START_RESEARCH", topic, sessionId: newSessionId });
+    } else {
+      chrome.runtime.sendMessage({ type: "START_RESEARCH", topic, sessionId: currentSessionId });
     }
-    chrome.runtime.sendMessage({ type: "START_RESEARCH", topic, sessionId: currentSessionId });
   };
   
   const handleDeleteCurrentSession = () => {
@@ -554,14 +621,6 @@ function SidePanel() {
         deleteSession(activeSession.id);
     }
   }
-
-  const renderError = () => (
-    <div style={styles.errorBox}>
-      <h4>发生错误</h4>
-      <p>{activeSession?.error}</p>
-      <button onClick={() => resetActiveSession()} style={styles.button}>重置研究</button>
-    </div>
-  );
 
   return (
     <div style={styles.container}>
@@ -582,7 +641,7 @@ function SidePanel() {
         
         {activeSession && (
           <>
-            {activeSession.error && renderError()}
+            {activeSession.error && <ErrorRetryComponent session={activeSession} />}
 
             {activeSession.stage === 'IDLE' && <InitialSection session={activeSession} onStart={handleStartResearch} />}
             
@@ -598,7 +657,7 @@ function SidePanel() {
                 <ScreeningResultsSection session={activeSession} />
                 <ClinicalTrialsSection session={activeSession} />
                 <FullTextGatheringSection session={activeSession} />
-                {activeSession.stage === 'SYNTHESIZING' && <div style={styles.loadingBox}><p>AI正在阅读全文并撰写报告，这可能需要几分钟...</p></div>}
+                {activeSession.stage === 'SYNTHESIZING' && activeSession.loading && <div style={styles.loadingBox}><p>AI正在阅读全文并撰写报告，这可能需要几分钟...</p></div>}
                 <FinalReportSection session={activeSession} />
               </>
             )}
@@ -631,7 +690,7 @@ const styles: { [key: string]: React.CSSProperties } = {
   buttonDisabled: { backgroundColor: "#aaa", cursor: "not-allowed" },
   inputError: { border: '1px solid red' },
   errorText: { color: 'red', fontSize: '13px', marginTop: '5px' },
-  errorBox: { margin: '15px', padding: '15px', backgroundColor: '#ffebee', border: '1px solid #ef5350', borderRadius: '5px', color: '#c62828' },
+  errorBox: { margin: '15px', padding: '15px', backgroundColor: '#ffebee', border: '1px solid #ef5350', borderRadius: '8px', color: '#c62828' },
   successBox: { padding: '15px', backgroundColor: '#e8f5e9', border: '1px solid #66bb6a', borderRadius: '5px', color: '#2e7d32' },
   loadingBox: { textAlign: 'center', padding: '40px 20px', color: '#555' },
   planCard: { position: 'relative', border: '1px solid #e0e0e0', padding: '15px', margin: '10px 0', borderRadius: '8px', backgroundColor: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' },

@@ -49,9 +49,11 @@ export const useStore = create<AppState>()(
           finalReport: "",
           loading: false,
           error: null,
+          lastFailedAction: null,
           log: [`[${new Date().toLocaleTimeString()}] 会话已创建: "${topic}"`],
           gatheringIndex: 0,
-          clinicalTrials: [], // 【新增】
+          clinicalTrials: [],
+          clinicalTrialsQuery: null, // 【新增】初始化
         }
         set((state) => ({
           sessions: [...state.sessions, newSession],
@@ -118,9 +120,11 @@ export const useStore = create<AppState>()(
                 finalReport: "",
                 loading: false,
                 error: null,
+                lastFailedAction: null,
                 log: [`[${new Date().toLocaleTimeString()}] 会话已重置.`],
                 gatheringIndex: 0,
-                clinicalTrials: [], // 【新增】
+                clinicalTrials: [],
+                clinicalTrialsQuery: null, // 【新增】重置
               };
             }
             return session;
