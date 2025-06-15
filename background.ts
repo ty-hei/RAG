@@ -12,7 +12,8 @@ import {
   synthesisWriterPrompt, 
   clinicalTrialReviewerPrompt, 
   clinicalTrialSearchRefinerPrompt,
-  webSearchReviewerPrompt
+  webSearchReviewerPrompt,
+  generateSearchQueriesPrompt // ✅ 1. 导入新的 prompt
 } from "./lib/prompts"
 import { useStore } from "./lib/store"
 import { performWebSearch } from "./lib/web-search";
@@ -46,7 +47,13 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   if (url.origin === "https://pubmed.ncbi.nlm.nih.gov") {
     await chrome.sidePanel.setOptions({ tabId, path: "sidepanel.html", enabled: true });
   } else {
-    await chrome.sidePanel.setOptions({ tabId, enabled: false });
+    // 保持在全文页面时可用
+    const activeSession = useStore.getState().getActiveSession();
+    if (activeSession && activeSession.stage === 'GATHERING') {
+      await chrome.sidePanel.setOptions({ tabId, path: "sidepanel.html", enabled: true });
+    } else {
+      await chrome.sidePanel.setOptions({ tabId, enabled: false });
+    }
   }
 });
 
@@ -161,7 +168,7 @@ async function handleExecuteSearch(plan: ResearchPlan, sessionId: string) {
   await addToLog(sessionId, "计划已确认，开始执行多源信息检索...");
   updateSessionById(sessionId, {
     loading: true,
-    loadingMessage: "正在组合关键词并准备并行检索...",
+    loadingMessage: "正在准备检索...",
     stage: "SCREENING",
     error: null,
     lastFailedAction: null,
@@ -175,43 +182,48 @@ async function handleExecuteSearch(plan: ResearchPlan, sessionId: string) {
   notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
 
   try {
-    // 1. 为PubMed和ClinicalTrials创建复杂的布尔查询
-    const subQueryGroups = plan.subQuestions
-      .map(sq => {
-        const validKeywords = sq.keywords.filter(k => k.trim());
-        if (validKeywords.length === 0) {
-          return null;
-        }
-        return `(${validKeywords.join(" AND ")})`;
-      })
-      .filter(Boolean);
+    // ✅ 2. 【核心变更】使用新的 LLM 调用来生成智能检索词
+    const storage = new Storage({ area: "local" })
+    const config = await storage.get<LLMConfig>("llmConfig")
+    if (!config?.apiKey) throw new Error("API密钥未配置。请在设置页面中设置。")
 
-    if (subQueryGroups.length === 0) {
-      throw new Error("研究计划中没有任何有效的关键词，请检查计划。");
-    }
-    const academicSearchTerm = subQueryGroups.join(" OR ");
-
-    // 【变更】从研究计划中获取专用的Web搜索查询词
-    const webSearchTerm = plan.webQuery || session.topic; // 使用 plan.webQuery，如果为空则回退到原始主题
+    await addToLog(sessionId, "调用LLM生成优化后的检索策略...");
+    updateSessionById(sessionId, { loadingMessage: "正在调用AI生成优化检索策略..." });
+    notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
     
-    await addToLog(sessionId, `学术数据库检索词: ${academicSearchTerm}`);
-    await addToLog(sessionId, `Web搜索检索词: ${webSearchTerm}`);
+    const queryGenPrompt = generateSearchQueriesPrompt(plan);
+    const llmResponse = await callLlm(queryGenPrompt, config, config.fastModel, "json");
+    const cleanedResponse = llmResponse.trim().replace(/^```json\s*/, "").replace(/\s*```$/, "");
+    const { pubmedQuery, clinicalTrialQuery, webQuery } = JSON.parse(cleanedResponse);
+    
+    if (!pubmedQuery || !clinicalTrialQuery || !webQuery) {
+        throw new Error("AI未能成功生成所有必需的检索查询。");
+    }
 
-    updateSessionById(sessionId, { pubmedQuery: academicSearchTerm });
+    await addToLog(sessionId, `PubMed 检索词: ${pubmedQuery}`);
+    await addToLog(sessionId, `ClinicalTrials.gov 检索词: ${clinicalTrialQuery}`);
+    await addToLog(sessionId, `Web 搜索词: ${webQuery}`);
+
+    updateSessionById(sessionId, { 
+        pubmedQuery: pubmedQuery,
+        clinicalTrialsQuery: clinicalTrialQuery 
+    });
     notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
 
+    // ✅ 3. 并行执行所有搜索
     await Promise.all([
-      searchPubMed(plan, academicSearchTerm, sessionId),
-      searchClinicalTrials(plan, academicSearchTerm, sessionId),
-      searchWeb(plan, webSearchTerm, sessionId)
+      searchPubMed(plan, pubmedQuery, sessionId),
+      searchClinicalTrials(plan, clinicalTrialQuery, sessionId),
+      searchWeb(plan, webQuery, sessionId)
     ]);
 
     updateSessionById(sessionId, { loading: false, loadingMessage: null });
 
   } catch (err) {
-    await addToLog(sessionId, `错误: ${err.message}`);
+    const errorMessage = err instanceof SyntaxError ? "无法解析AI模型的检索策略返回结果。" : err.message;
+    await addToLog(sessionId, `错误: ${errorMessage}`);
     updateSessionById(sessionId, { 
-      error: err.message, 
+      error: errorMessage, 
       loading: false, 
       loadingMessage: null,
       lastFailedAction: { type: "EXECUTE_SEARCH", payload: { plan } }
@@ -220,6 +232,7 @@ async function handleExecuteSearch(plan: ResearchPlan, sessionId: string) {
     notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   }
 }
+
 
 async function searchPubMed(plan: ResearchPlan, searchTerm: string, sessionId: string) {
     const { updateSessionById } = useStore.getState();
@@ -353,7 +366,6 @@ async function searchClinicalTrials(plan: ResearchPlan, searchTerm: string, sess
     try {
         await addToLog(sessionId, `[ClinicalTrials.gov] 开始初步检索...`);
         updateSessionById(sessionId, { 
-            clinicalTrialsQuery: searchTerm,
             loadingMessage: "正在检索 ClinicalTrials.gov..."
         });
         notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
@@ -375,7 +387,11 @@ async function searchClinicalTrials(plan: ResearchPlan, searchTerm: string, sess
             
             if (new_queries && new_queries.length > 0) {
                 await addToLog(sessionId, `[ClinicalTrials.gov] AI识别到知识缺口，执行 ${new_queries.length} 个补充检索...`);
-                updateSessionById(sessionId, { clinicalTrialsQuery: `${searchTerm}\n\n补充检索:\n- ${new_queries.join('\n- ')}` });
+                
+                // 更新UI中显示的完整查询
+                const fullQueryForDisplay = `${searchTerm}\n\n补充检索:\n- ${new_queries.join('\n- ')}`;
+                updateSessionById(sessionId, { clinicalTrialsQuery: fullQueryForDisplay });
+
                 const existingNctIdSet = new Set(combinedTrials.map(t => t.nctId));
 
                 for (const query of new_queries) {
@@ -417,7 +433,7 @@ async function searchClinicalTrials(plan: ResearchPlan, searchTerm: string, sess
 
     } catch (error) {
         await addToLog(sessionId, `[ClinicalTrials.gov] 检索或分析失败: ${error.message}`);
-        throw error;
+        throw error; // Re-throw to be caught by the main handler
     }
 }
 
@@ -463,6 +479,7 @@ async function searchWeb(plan: ResearchPlan, searchTerm: string, sessionId: stri
 
   } catch (error) {
     await addToLog(sessionId, `[Web Search] 网页检索或分析失败: ${error.message}`);
+    // Re-throw to be caught by the main handler in handleExecuteSearch
     throw error;
   }
 }
@@ -546,10 +563,8 @@ async function handleSynthesizeReport(sessionId: string) {
   const { updateSessionById, sessions } = useStore.getState();
   await useStore.persist.rehydrate();
   
-  // 【变更】获取当前会话的更完整状态
   const session = useStore.getState().sessions.find(s => s.id === sessionId);
   if (!session) {
-      // 如果找不到会话，记录错误并退出
       await addToLog(sessionId, "错误: 无法找到当前会话以生成报告。");
       return;
   }
@@ -568,7 +583,6 @@ async function handleSynthesizeReport(sessionId: string) {
 
     await addToLog(sessionId, "调用增强模型撰写多源文献综述...");
 
-    // 【变更】将所有三种数据源传递给 synthesisWriterPrompt
     const synthesisPrompt = synthesisWriterPrompt(
       session.researchPlan,
       session.fullTexts,

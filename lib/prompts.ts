@@ -285,3 +285,28 @@ export const synthesisWriterPrompt = (
     - For clinical trials: **[TRIAL:NCTXXXXXX]**
     - For web results: **[WEB:https://...]**
 `;
+
+export const generateSearchQueriesPrompt = (plan: ResearchPlan): string => `
+  You are an expert medical librarian and search strategist. Your task is to generate effective boolean search queries for PubMed and ClinicalTrials.gov based on a complete research plan.
+
+  **Research Plan:**
+  - Main Topic: "${plan.clarification}"
+  - Sub-questions:
+    ${plan.subQuestions.map((sq, i) => `${i + 1}. ${sq.question}`).join('\n    ')}
+
+  **Your Task:**
+  1.  Analyze all sub-questions to identify the core, overarching concepts.
+  2.  Create a primary, powerful boolean query for **PubMed**. This query should be broad enough to cover the main topic but specific enough to yield relevant results. Combine related keywords with "OR" and group them with parentheses. Then, connect the conceptual groups with "AND".
+  3.  Create a similar, potentially simpler query for **ClinicalTrials.gov**.
+  4.  If the research plan contains a dedicated \`webQuery\`, use it for the web search. Otherwise, create a simple, non-boolean query for general web search.
+
+  **CRITICAL INSTRUCTIONS:**
+  - Your final output MUST be a single, valid JSON object, with no markdown formatting or other text outside of the JSON.
+  - The JSON object must have three keys: "pubmedQuery", "clinicalTrialQuery", and "webQuery".
+  - Example output for a topic on "metformin for pcos": 
+    {
+      "pubmedQuery": "((metformin OR glucophage) AND (polycystic ovary syndrome OR PCOS) AND (treatment OR therapy OR efficacy))",
+      "clinicalTrialQuery": "(metformin) AND (PCOS OR Polycystic Ovary Syndrome)",
+      "webQuery": "metformin PCOS latest guidelines"
+    }
+`;
