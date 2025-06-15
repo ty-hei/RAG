@@ -13,9 +13,9 @@ const defaultConfig: LLMConfig = {
   fastModel: "gemini-1.5-flash-latest",
   smartModel: "gemini-1.5-pro-latest",
   fetchRateLimit: 15,
-  // 【变更】新增Web搜索的默认配置
   webSearchProvider: "none",
   tavilyApiKey: "",
+  ncbiApiKey: "", // NCBI密钥的默认值
 }
 
 function OptionsPage() {
@@ -130,6 +130,21 @@ function OptionsPage() {
       <hr style={{margin: '30px 0', border: 'none', borderTop: '1px solid #eee'}}/>
       
       <h2>工作流设置</h2>
+      
+      {/* 【新增】NCBI API Key 设置区域 */}
+      <div style={styles.formGroup}>
+        <label style={styles.label}>NCBI API Key (推荐)</label>
+        <input
+          type="password"
+          style={styles.input}
+          placeholder="粘贴您的 NCBI API 密钥以提高PubMed请求速率"
+          value={config.ncbiApiKey}
+          onChange={(e) => handleConfigChange("ncbiApiKey", e.target.value)}
+        />
+        <p style={styles.fieldDescription}>
+            从您的NCBI账户免费获取。可以避免因请求频繁而被PubMed临时屏蔽。此项为可选。
+        </p>
+      </div>
 
       <div style={styles.formGroup}>
         <label style={styles.label}>全文抓取速率限制（秒/篇）</label>
@@ -146,7 +161,6 @@ function OptionsPage() {
         </p>
       </div>
 
-      {/* 【新增】Web搜索设置区域 */}
       <hr style={{margin: '30px 0', border: 'none', borderTop: '1px solid #eee'}}/>
       <h2>Web搜索设置</h2>
       <p style={styles.fieldDescription}>

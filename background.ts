@@ -175,8 +175,6 @@ async function handleExecuteSearch(plan: ResearchPlan, sessionId: string) {
   notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
 
   try {
-    // 【变更】为不同搜索引擎创建不同的检索词
-    
     // 1. 为PubMed和ClinicalTrials创建复杂的布尔查询
     const subQueryGroups = plan.subQuestions
       .map(sq => {
@@ -193,8 +191,8 @@ async function handleExecuteSearch(plan: ResearchPlan, sessionId: string) {
     }
     const academicSearchTerm = subQueryGroups.join(" OR ");
 
-    // 2. 为Web Search创建一个更简洁、自然的查询
-    const webSearchTerm = plan.clarification || session.topic;
+    // 【变更】从研究计划中获取专用的Web搜索查询词
+    const webSearchTerm = plan.webQuery || session.topic; // 使用 plan.webQuery，如果为空则回退到原始主题
     
     await addToLog(sessionId, `学术数据库检索词: ${academicSearchTerm}`);
     await addToLog(sessionId, `Web搜索检索词: ${webSearchTerm}`);

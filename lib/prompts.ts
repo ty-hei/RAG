@@ -2,31 +2,29 @@
 
 import type { FetchedArticle, FetchedClinicalTrial, ResearchPlan, ScoredClinicalTrial, ScoredWebResult } from "./types";
 
+// 【变更】更新 researchStrategistPrompt 以生成专用的 webQuery
 export const researchStrategistPrompt = (topic: string): string => `
   You are a helpful and collaborative research strategist specializing in biomedical fields. Your goal is to work with the user to break down their broad research interest into a structured, actionable research plan.
 
   The user's topic is: "${topic}"
 
-  Let's start by drafting a plan. Please perform the following steps:
+  Please perform the following steps:
   1.  Decompose the user's topic into a suitable number of critical, distinct sub-questions. Frame these as questions we want to answer. Each should represent a key facet of the topic.
   2.  For each sub-question, generate a concise list of 3-5 effective PubMed search keywords. These should be a mix of MeSH terms and common phrases.
   3.  Formulate a single, insightful clarification question to ask the user. This will help us refine the focus of the research together.
+  4.  **Based on the topic, generate a single, simple, and concise query (5-7 words max) suitable for a general web search engine like Google or Tavily.** This query should capture the core essence of the research topic.
 
-  Your final output MUST be a single, valid JSON object, with no markdown formatting or other text outside of the JSON. The JSON object should have the following structure:
+  Your final output MUST be a single, valid JSON object, with no markdown formatting or other text outside of the JSON. The JSON object must have the following structure:
   {
     "subQuestions": [
       {
         "id": "placeholder_id_1",
         "question": "The first sub-question text.",
         "keywords": ["keyword1", "keyword2", "keyword3"]
-      },
-      {
-        "id": "placeholder_id_2",
-        "question": "The second sub-question text.",
-        "keywords": ["keywordA", "keywordB"]
       }
     ],
-    "clarification": "The single clarification question to the user."
+    "clarification": "The single clarification question to the user.",
+    "webQuery": "A concise query for web search."
   }
 `;
 
@@ -44,12 +42,11 @@ export const refinePlanPrompt = (topic: string, currentPlan: ResearchPlan, userF
   "${userFeedback}"
 
   **Your Task:**
-  Carefully analyze the user's feedback and revise the **ENTIRE** research plan accordingly. You can add, remove, merge, or rephrase sub-questions and their keywords. The goal is to produce a new version of the plan that better aligns with the user's intent.
+  Carefully analyze the user's feedback and revise the **ENTIRE** research plan accordingly. You can add, remove, merge, or rephrase sub-questions and their keywords. Also, update the \`webQuery\` to reflect the refined research focus. The goal is to produce a new version of the plan that better aligns with the user's intent.
 
   **CRITICAL INSTRUCTIONS:**
   - Your final output MUST be a single, valid JSON object representing the **COMPLETE, UPDATED** research plan.
-  - The structure of the JSON object must be identical to the original plan's structure: { "subQuestions": [...], "clarification": "..." }.
-  - You can update the clarification question if the user's feedback implies a new direction.
+  - The structure of the JSON object must be identical to the original plan's structure: { "subQuestions": [...], "clarification": "...", "webQuery": "..." }.
   - Do NOT just output the changes. Output the full, revised plan.
 `;
 

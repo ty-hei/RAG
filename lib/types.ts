@@ -48,7 +48,9 @@ export interface SubQuestion {
 export interface ResearchPlan {
   subQuestions: SubQuestion[];
   clarification: string;
+  webQuery: string;
 }
+
 
 export interface FetchedArticle {
   pmid: string;
