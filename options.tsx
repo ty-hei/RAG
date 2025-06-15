@@ -13,7 +13,9 @@ const defaultConfig: LLMConfig = {
   fastModel: "gemini-1.5-flash-latest",
   smartModel: "gemini-1.5-pro-latest",
   fetchRateLimit: 15,
-  // 【删除】移除了 manualScrapingConfirmation 默认值
+  // 【变更】新增Web搜索的默认配置
+  webSearchProvider: "none",
+  tavilyApiKey: "",
 }
 
 function OptionsPage() {
@@ -23,7 +25,6 @@ function OptionsPage() {
   useEffect(() => {
     const loadConfig = async () => {
       const savedConfig = await storage.get<LLMConfig>("llmConfig")
-      // 合并加载的配置和默认配置，以确保新字段存在
       if (savedConfig) {
         setConfig({ ...defaultConfig, ...savedConfig })
       }
@@ -50,7 +51,6 @@ function OptionsPage() {
     return "保存设置"
   }
 
-  // 【修改】简化 handleConfigChange，不再需要处理复选框
   const handleConfigChange = (field: keyof LLMConfig, value: any) => {
     setConfig((prev) => ({ ...prev, [field]: value }));
   }
@@ -58,11 +58,12 @@ function OptionsPage() {
   return (
     <div style={styles.container}>
       <h1>PubMed RAG 智能助理 - 设置</h1>
+      
+      <h2 style={{marginTop: '40px'}}>AI 模型设置</h2>
       <p style={styles.description}>
-        请在此处配置您的语言模型API密钥和其它设置。您的数据将安全地存储在本地。
+        请在此处配置您的语言模型API密钥。您的数据将安全地存储在本地。
       </p>
 
-      {/* Provider, API Key, Endpoint, Models ... */}
       <div style={styles.formGroup}>
         <label style={styles.label}>AI 提供商</label>
         <select
@@ -144,10 +145,38 @@ function OptionsPage() {
           为了避免被网站屏蔽，插件将以这个速度逐一打开标签页抓取全文。建议15-30秒。
         </p>
       </div>
-      
-      {/* 【删除】移除人工确认复选框的整个 div */}
 
+      {/* 【新增】Web搜索设置区域 */}
+      <hr style={{margin: '30px 0', border: 'none', borderTop: '1px solid #eee'}}/>
+      <h2>Web搜索设置</h2>
+      <p style={styles.fieldDescription}>
+        (可选) 启用Web搜索服务，可以用新闻、博客等信息丰富研究上下文。
+      </p>
       <div style={styles.formGroup}>
+        <label style={styles.label}>Web搜索服务商</label>
+        <select
+          value={config.webSearchProvider}
+          onChange={(e) => handleConfigChange("webSearchProvider", e.target.value)}
+          style={styles.input}>
+          <option value="none">禁用</option>
+          <option value="tavily">Tavily AI</option>
+        </select>
+      </div>
+
+      {config.webSearchProvider === 'tavily' && (
+        <div style={styles.formGroup}>
+          <label style={styles.label}>Tavily AI API 密钥</label>
+          <input
+            type="password"
+            style={styles.input}
+            placeholder="粘贴您的 Tavily API 密钥"
+            value={config.tavilyApiKey}
+            onChange={(e) => handleConfigChange("tavilyApiKey", e.target.value)}
+          />
+        </div>
+      )}
+
+      <div style={{...styles.formGroup, marginTop: '40px'}}>
         <button
           onClick={handleSave}
           style={{ ...styles.button, ...(saveStatus === 'saving' ? styles.buttonDisabled : {}) }}

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from "react"
 import { useStore } from "./lib/store"
-import type { ResearchSession, Stage, FetchedArticle, ScoredArticle, ScoredClinicalTrial } from "./lib/types"
+import type { ResearchSession, Stage, FetchedArticle, ScoredArticle, ScoredClinicalTrial, ScoredWebResult } from "./lib/types"
 
 // #region --- Helper Components ---
 
@@ -407,7 +407,42 @@ const ScreeningResultsSection: React.FC<{ session: ResearchSession }> = ({ sessi
   );
 };
 
-// 【变更】更新组件以展示检索策略和AI评分
+const WebResultsSection: React.FC<{ session: ResearchSession }> = ({ session }) => {
+  if (session.webResults.length === 0) {
+    return null;
+  }
+
+  return (
+    <Section
+      title={`相关网页资讯 (${session.webResults.length})`}
+      stage="SCREENING"
+      completedStages={[]}
+    >
+      <p style={styles.description}>
+        AI为您从网络上筛选了以下相关的资讯、新闻或专家观点，作为学术文献的补充。
+      </p>
+      <div style={styles.articleList}>
+        {session.webResults.map((result, index) => (
+          <div key={index} style={styles.articleItem}>
+            <a href={result.url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>
+                <h4 style={{...styles.articleTitle, color: '#0056b3'}}>{result.title}</h4>
+            </a>
+            <p style={{ ...styles.articleMeta, fontStyle: 'italic', color: '#28a745' }}>
+                <strong>AI评分: {result.score}/10</strong> - {result.reason}
+            </p>
+             <p style={{...styles.articleMeta, color: '#555', maxHeight: '5em', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {result.content}
+            </p>
+            <a href={result.url} target="_blank" rel="noopener noreferrer" style={{fontSize: '12px'}}>
+              访问页面
+            </a>
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+};
+
 const ClinicalTrialsSection: React.FC<{ session: ResearchSession }> = ({ session }) => {
   if (session.clinicalTrials.length === 0 && !session.clinicalTrialsQuery) {
     return null;
@@ -655,6 +690,8 @@ function SidePanel() {
               <>
                 <ResearchPlanSection session={activeSession} />
                 <ScreeningResultsSection session={activeSession} />
+                {/* 【变更】确保WebResultsSection组件在此处被渲染 */}
+                <WebResultsSection session={activeSession} />
                 <ClinicalTrialsSection session={activeSession} />
                 <FullTextGatheringSection session={activeSession} />
                 {activeSession.stage === 'SYNTHESIZING' && activeSession.loading && <div style={styles.loadingBox}><p>AI正在阅读全文并撰写报告，这可能需要几分钟...</p></div>}

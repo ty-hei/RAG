@@ -41,8 +41,10 @@ export const useStore = create<AppState>()(
           topic: topic,
           researchPlan: null,
           pubmedQuery: null,
+          clinicalTrialsQuery: null,
           rawArticles: [],
           scoredAbstracts: [],
+          webResults: [], // 初始化
           loadingMessage: null,
           articlesToFetch: [],
           fullTexts: [],
@@ -53,7 +55,6 @@ export const useStore = create<AppState>()(
           log: [`[${new Date().toLocaleTimeString()}] 会话已创建: "${topic}"`],
           gatheringIndex: 0,
           clinicalTrials: [],
-          clinicalTrialsQuery: null, // 【新增】初始化
         }
         set((state) => ({
           sessions: [...state.sessions, newSession],
@@ -112,8 +113,10 @@ export const useStore = create<AppState>()(
                 stage: "IDLE",
                 researchPlan: null,
                 pubmedQuery: null,
+                clinicalTrialsQuery: null, 
                 rawArticles: [],
                 scoredAbstracts: [],
+                webResults: [], // 重置
                 loadingMessage: null,
                 articlesToFetch: [],
                 fullTexts: [],
@@ -124,7 +127,6 @@ export const useStore = create<AppState>()(
                 log: [`[${new Date().toLocaleTimeString()}] 会话已重置.`],
                 gatheringIndex: 0,
                 clinicalTrials: [],
-                clinicalTrialsQuery: null, // 【新增】重置
               };
             }
             return session;

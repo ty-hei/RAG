@@ -4,9 +4,27 @@ import { Storage } from "@plasmohq/storage"
 import { v4 as uuidv4 } from 'uuid';
 
 import { callLlm } from "./lib/llm"
-import { researchStrategistPrompt, refinePlanPrompt, searchRefinerPrompt, literatureReviewerPrompt, synthesisWriterPrompt, clinicalTrialReviewerPrompt, clinicalTrialSearchRefinerPrompt } from "./lib/prompts"
+import { 
+  researchStrategistPrompt, 
+  refinePlanPrompt, 
+  searchRefinerPrompt, 
+  literatureReviewerPrompt, 
+  synthesisWriterPrompt, 
+  clinicalTrialReviewerPrompt, 
+  clinicalTrialSearchRefinerPrompt,
+  webSearchReviewerPrompt
+} from "./lib/prompts"
 import { useStore } from "./lib/store"
-import type { LLMConfig, ResearchPlan, FetchedArticle, ScoredArticle, FetchedClinicalTrial, ScoredClinicalTrial } from "./lib/types"
+import { performWebSearch } from "./lib/web-search";
+import type { 
+  LLMConfig, 
+  ResearchPlan, 
+  FetchedArticle, 
+  ScoredArticle, 
+  FetchedClinicalTrial, 
+  ScoredClinicalTrial,
+  ScoredWebResult
+} from "./lib/types"
 
 async function addToLog(sessionId: string, message: string) {
     await useStore.persist.rehydrate();
@@ -137,6 +155,8 @@ async function handleRefinePlan(sessionId: string, feedback: string) {
 async function handleExecuteSearch(plan: ResearchPlan, sessionId: string) {
   const { updateSessionById } = useStore.getState();
   await useStore.persist.rehydrate();
+  const session = useStore.getState().sessions.find(s => s.id === sessionId);
+  if (!session) return;
   
   await addToLog(sessionId, "计划已确认，开始执行多源信息检索...");
   updateSessionById(sessionId, {
@@ -150,22 +170,42 @@ async function handleExecuteSearch(plan: ResearchPlan, sessionId: string) {
     rawArticles: [],
     scoredAbstracts: [],
     clinicalTrials: [],
+    webResults: [],
   });
   notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
 
   try {
-    const allKeywords = plan.subQuestions.flatMap(sq => sq.keywords).filter(Boolean);
-    const uniqueKeywords = [...new Set(allKeywords)];
-    if (uniqueKeywords.length === 0) throw new Error("研究计划中没有任何关键词，请检查计划。")
-    const searchTerm = uniqueKeywords.join(" OR ");
+    // 【变更】为不同搜索引擎创建不同的检索词
     
-    await addToLog(sessionId, `通用检索词: ${searchTerm}`);
-    updateSessionById(sessionId, { pubmedQuery: searchTerm });
+    // 1. 为PubMed和ClinicalTrials创建复杂的布尔查询
+    const subQueryGroups = plan.subQuestions
+      .map(sq => {
+        const validKeywords = sq.keywords.filter(k => k.trim());
+        if (validKeywords.length === 0) {
+          return null;
+        }
+        return `(${validKeywords.join(" AND ")})`;
+      })
+      .filter(Boolean);
+
+    if (subQueryGroups.length === 0) {
+      throw new Error("研究计划中没有任何有效的关键词，请检查计划。");
+    }
+    const academicSearchTerm = subQueryGroups.join(" OR ");
+
+    // 2. 为Web Search创建一个更简洁、自然的查询
+    const webSearchTerm = plan.clarification || session.topic;
+    
+    await addToLog(sessionId, `学术数据库检索词: ${academicSearchTerm}`);
+    await addToLog(sessionId, `Web搜索检索词: ${webSearchTerm}`);
+
+    updateSessionById(sessionId, { pubmedQuery: academicSearchTerm });
     notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
 
     await Promise.all([
-      searchPubMed(plan, searchTerm, sessionId),
-      searchClinicalTrials(plan, searchTerm, sessionId)
+      searchPubMed(plan, academicSearchTerm, sessionId),
+      searchClinicalTrials(plan, academicSearchTerm, sessionId),
+      searchWeb(plan, webSearchTerm, sessionId)
     ]);
 
     updateSessionById(sessionId, { loading: false, loadingMessage: null });
@@ -189,9 +229,11 @@ async function searchPubMed(plan: ResearchPlan, searchTerm: string, sessionId: s
     
     const storage = new Storage({ area: "local" });
     const config = await storage.get<LLMConfig>("llmConfig");
-    if (!config?.apiKey) throw new Error("[PubMed] API密钥未配置。");
-    
-    const esearchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${encodeURIComponent(searchTerm)}&retmax=50&retmode=json`;
+    if (!config?.apiKey) throw new Error("[PubMed] LLM API密钥未配置。");
+
+    const apiKeyParam = config.ncbiApiKey ? `&api_key=${config.ncbiApiKey}` : "";
+
+    const esearchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${encodeURIComponent(searchTerm)}&retmax=50&retmode=json${apiKeyParam}`;
     const esearchResponse = await fetch(esearchUrl);
     if (!esearchResponse.ok) throw new Error(`[PubMed] ESearch API 失败，状态: ${esearchResponse.status}`);
     const esearchData = await esearchResponse.json();
@@ -208,7 +250,7 @@ async function searchPubMed(plan: ResearchPlan, searchTerm: string, sessionId: s
     updateSessionById(sessionId, { loadingMessage: `[PubMed] 找到 ${initialPmids.length} 篇文献，获取摘要中...` });
     notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
     
-    const efetchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=${initialPmids.join(",")}&rettype=abstract&retmode=xml`;
+    const efetchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=${initialPmids.join(",")}&rettype=abstract&retmode=xml${apiKeyParam}`;
     const efetchResponse = await fetch(efetchUrl);
     if (!efetchResponse.ok) throw new Error(`[PubMed] EFetch API 失败，状态: ${efetchResponse.status}`);
     const xmlText = await efetchResponse.text();
@@ -240,12 +282,15 @@ async function searchPubMed(plan: ResearchPlan, searchTerm: string, sessionId: s
 
         for (const query of new_queries) {
             await addToLog(sessionId, `[PubMed] 补充检索: "${query}"`);
-            const supplEsearchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${encodeURIComponent(query)}&retmax=10&retmode=json`;
+            const supplEsearchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${encodeURIComponent(query)}&retmax=10&retmode=json${apiKeyParam}`;
             const supplEsearchResponse = await fetch(supplEsearchUrl);
             if (supplEsearchResponse.ok) {
                 const supplEsearchData = await supplEsearchResponse.json();
                 const foundPimds: string[] = supplEsearchData.esearchresult?.idlist || [];
                 foundPimds.forEach(pmid => newPmids.add(pmid));
+            }
+            if (!config.ncbiApiKey) {
+                await new Promise(resolve => setTimeout(resolve, 350));
             }
         }
         
@@ -254,7 +299,7 @@ async function searchPubMed(plan: ResearchPlan, searchTerm: string, sessionId: s
 
         if (uniqueNewPmids.length > 0) {
             await addToLog(sessionId, `[PubMed] 补充检索找到 ${uniqueNewPmids.length} 篇新文献，正在获取摘要...`);
-            const supplEfetchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=${uniqueNewPmids.join(",")}&rettype=abstract&retmode=xml`;
+            const supplEfetchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=${uniqueNewPmids.join(",")}&rettype=abstract&retmode=xml${apiKeyParam}`;
             const supplEfetchResponse = await fetch(supplEfetchUrl);
             if (supplEfetchResponse.ok) {
                 const supplXmlText = await supplEfetchResponse.text();
@@ -287,7 +332,6 @@ async function searchPubMed(plan: ResearchPlan, searchTerm: string, sessionId: s
     updateSessionById(sessionId, { scoredAbstracts, rawArticles: [] });
 }
 
-// 【变更】重构此函数以支持反思和二次检索
 async function searchClinicalTrials(plan: ResearchPlan, searchTerm: string, sessionId: string) {
     const { updateSessionById } = useStore.getState();
 
@@ -321,7 +365,7 @@ async function searchClinicalTrials(plan: ResearchPlan, searchTerm: string, sess
         
         const storage = new Storage({ area: "local" });
         const config = await storage.get<LLMConfig>("llmConfig");
-        if (!config?.apiKey) throw new Error("[ClinicalTrials.gov] API密钥未配置。");
+        if (!config?.apiKey) throw new Error("[ClinicalTrials.gov] LLM API密钥未配置。");
 
         if (combinedTrials.length > 0) {
             await addToLog(sessionId, `[ClinicalTrials.gov] AI 正在反思初步检索结果...`);
@@ -377,6 +421,52 @@ async function searchClinicalTrials(plan: ResearchPlan, searchTerm: string, sess
         await addToLog(sessionId, `[ClinicalTrials.gov] 检索或分析失败: ${error.message}`);
         throw error;
     }
+}
+
+async function searchWeb(plan: ResearchPlan, searchTerm: string, sessionId: string) {
+  const { updateSessionById } = useStore.getState();
+  
+  try {
+    const storage = new Storage({ area: "local" });
+    const config = await storage.get<LLMConfig>("llmConfig");
+
+    if (!config || config.webSearchProvider === 'none' || (config.webSearchProvider === 'tavily' && !config.tavilyApiKey)) {
+      await addToLog(sessionId, `[Web Search] 跳过：未配置或未启用Web搜索服务。`);
+      return;
+    }
+    
+    await addToLog(sessionId, `[Web Search] 使用 ${config.webSearchProvider} 开始网页检索...`);
+    updateSessionById(sessionId, { loadingMessage: "正在执行网页检索..." });
+
+    const rawResults = await performWebSearch(
+      config.webSearchProvider,
+      searchTerm,
+      config.tavilyApiKey
+    );
+
+    if (rawResults.length === 0) {
+      await addToLog(sessionId, `[Web Search] 未找到相关网页结果。`);
+      return;
+    }
+
+    await addToLog(sessionId, `[Web Search] 找到 ${rawResults.length} 个网页结果，正在调用AI评估...`);
+    
+    const reviewPrompt = webSearchReviewerPrompt(plan, rawResults);
+    const llmReviewResponse = await callLlm(reviewPrompt, config, config.fastModel, "json");
+    const reviews: { url: string; score: number; reason: string }[] = JSON.parse(llmReviewResponse.trim().replace(/^```json\s*/, "").replace(/\s*```$/, ""));
+    
+    const scoredWebResults: ScoredWebResult[] = rawResults.map(result => {
+      const review = reviews.find(r => r.url === result.url);
+      return { ...result, score: review?.score || 0, reason: review?.reason || "AI未提供评估意见。" };
+    }).sort((a, b) => b.score - a.score);
+
+    await addToLog(sessionId, `[Web Search] AI评估完成。`);
+    updateSessionById(sessionId, { webResults: scoredWebResults });
+
+  } catch (error) {
+    await addToLog(sessionId, `[Web Search] 网页检索或分析失败: ${error.message}`);
+    throw error;
+  }
 }
 
 function ensureSubQuestionIds(plan: ResearchPlan) {
@@ -457,20 +547,36 @@ async function handleScrapeActiveTab(sessionId: string, pmid: string) {
 async function handleSynthesizeReport(sessionId: string) {
   const { updateSessionById, sessions } = useStore.getState();
   await useStore.persist.rehydrate();
-  await addToLog(sessionId, "所有全文已就绪，开始生成最终报告...");
-  updateSessionById(sessionId, { stage: 'SYNTHESIZING', loading: true, error: null, lastFailedAction: null });
+  
+  // 【变更】获取当前会话的更完整状态
+  const session = useStore.getState().sessions.find(s => s.id === sessionId);
+  if (!session) {
+      // 如果找不到会话，记录错误并退出
+      await addToLog(sessionId, "错误: 无法找到当前会话以生成报告。");
+      return;
+  }
+  
+  await addToLog(sessionId, "所有信息源已就绪，开始生成深度综述报告...");
+  updateSessionById(sessionId, { stage: 'SYNTHESIZING', loading: true, error: null });
   notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
+  
   try {
-    const session = sessions.find(s => s.id === sessionId);
-    if (!session || !session.researchPlan || session.fullTexts.length === 0) {
+    if (!session.researchPlan || session.fullTexts.length === 0) {
       throw new Error("无法生成报告：缺少研究计划或未抓取到任何全文。");
     }
     const storage = new Storage({ area: "local" });
     const config = await storage.get<LLMConfig>("llmConfig");
     if (!config?.apiKey) throw new Error("API密钥未配置。");
 
-    await addToLog(sessionId, "调用增强模型撰写文献综述...");
-    const synthesisPrompt = synthesisWriterPrompt(session.researchPlan, session.fullTexts);
+    await addToLog(sessionId, "调用增强模型撰写多源文献综述...");
+
+    // 【变更】将所有三种数据源传递给 synthesisWriterPrompt
+    const synthesisPrompt = synthesisWriterPrompt(
+      session.researchPlan,
+      session.fullTexts,
+      session.clinicalTrials,
+      session.webResults
+    );
     const finalReport = await callLlm(synthesisPrompt, config, config.smartModel, "text");
     
     await addToLog(sessionId, "研究报告生成完毕！");

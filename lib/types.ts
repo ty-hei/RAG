@@ -17,6 +17,15 @@ export interface ScoredClinicalTrial extends FetchedClinicalTrial {
   reason: string;
 }
 
+// 【新增】用于存储网页搜索结果的类型
+export interface ScoredWebResult {
+  url: string;
+  title: string;
+  content: string; // snippet or summary from search result
+  score: number;
+  reason: string;
+}
+
 export interface LLMConfig {
   provider: 'gemini' | 'openai';
   apiKey: string;
@@ -24,6 +33,10 @@ export interface LLMConfig {
   fastModel: string;
   smartModel: string;
   fetchRateLimit: number;
+  webSearchProvider: 'tavily' | 'none';
+  tavilyApiKey?: string;
+  // 【新增】NCBI API密钥字段
+  ncbiApiKey?: string;
 }
 
 export interface SubQuestion {
@@ -56,8 +69,10 @@ export interface ResearchSession {
   topic: string;
   researchPlan: ResearchPlan | null;
   pubmedQuery: string | null;
+  clinicalTrialsQuery: string | null;
   rawArticles: FetchedArticle[];
   scoredAbstracts: ScoredArticle[];
+  webResults: ScoredWebResult[];
   loadingMessage: string | null;
   articlesToFetch: ScoredArticle[];
   fullTexts: { pmid: string; text: string }[];
@@ -68,8 +83,6 @@ export interface ResearchSession {
   gatheringIndex: number;
   clinicalTrials: ScoredClinicalTrial[];
   lastFailedAction: { type: string; payload: any } | null;
-  // 【新增】用于展示临床试验的检索式
-  clinicalTrialsQuery: string | null;
 }
 
 export interface AppState {
