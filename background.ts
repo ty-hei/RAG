@@ -88,12 +88,9 @@ async function validateKeywordsWithMeSH(plan: ResearchPlan, config: LLMConfig): 
         }
         const data = await response.json();
         
-        // ✅ 【核心修正】使用更可靠的 `querytranslation` 字段来判断是否成功映射到MeSH词条
         const queryTranslation = data.esearchresult?.querytranslation || "";
         
-        // 如果翻译结果中包含 "[mesh terms]"，则认为该关键词是有效的MeSH术语或可由MeSH术语组成。
         if (queryTranslation.toLowerCase().includes("[mesh terms]")) {
-          // 我们将原始关键词标记为已验证，以保留用户的原始意图（例如，保留"B cell depletion"而不是只用"B-Lymphocytes"）
           validatedKeywords.push({ term: keyword, validated: true });
         } else {
           validatedKeywords.push({ term: keyword, validated: false });
@@ -583,10 +580,8 @@ async function handleScrapeActiveTab(sessionId: string, pmid: string) {
     if (!tabs[0] || !tabs[0].id) throw new Error("找不到有效的激活标签页。");
     
     const tabId = tabs[0].id;
-    await chrome.scripting.executeScript({
-        target: { tabId: tabId },
-        files: ["contents/scraper.js"]
-    });
+    // 由于脚本现在是静态注入的，我们不再需要动态注入
+    // await chrome.scripting.executeScript({ ... });
     chrome.tabs.sendMessage(tabId, { type: "DO_SCRAPE" });
 
     const scrapedText = await new Promise<string>((resolve, reject) => {
