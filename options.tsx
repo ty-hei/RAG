@@ -10,12 +10,15 @@ const defaultConfig: LLMConfig = {
   provider: "gemini",
   apiKey: "",
   apiEndpoint: "",
-  fastModel: "gemini-1.5-flash-latest",
-  smartModel: "gemini-1.5-pro-latest",
+  fastModel: "gemini-1.5-flash",
+  smartModel: "gemini-2.0-flash",
   fetchRateLimit: 15,
   webSearchProvider: "none",
   tavilyApiKey: "",
-  ncbiApiKey: "", // NCBI密钥的默认值
+  // ✅ 【新增】初始化 Google 配置
+  googleApiKey: "",
+  googleCseId: "",
+  ncbiApiKey: "",
 }
 
 function OptionsPage() {
@@ -131,7 +134,6 @@ function OptionsPage() {
       
       <h2>工作流设置</h2>
       
-      {/* 【新增】NCBI API Key 设置区域 */}
       <div style={styles.formGroup}>
         <label style={styles.label}>NCBI API Key (推荐)</label>
         <input
@@ -173,6 +175,8 @@ function OptionsPage() {
           onChange={(e) => handleConfigChange("webSearchProvider", e.target.value)}
           style={styles.input}>
           <option value="none">禁用</option>
+          {/* ✅ 【变更】增加 Google Search 选项 */}
+          <option value="google">Google Search</option>
           <option value="tavily">Tavily AI</option>
         </select>
       </div>
@@ -188,6 +192,38 @@ function OptionsPage() {
             onChange={(e) => handleConfigChange("tavilyApiKey", e.target.value)}
           />
         </div>
+      )}
+
+      {/* ✅ 【新增】Google Search 的配置输入框 */}
+      {config.webSearchProvider === 'google' && (
+        <>
+          <div style={styles.formGroup}>
+            <label style={styles.label}>Google API 密钥</label>
+            <input
+              type="password"
+              style={styles.input}
+              placeholder="粘贴您的 Google API 密钥"
+              value={config.googleApiKey}
+              onChange={(e) => handleConfigChange("googleApiKey", e.target.value)}
+            />
+             <p style={styles.fieldDescription}>
+                从 Google Cloud Console 获取。需要启用 Custom Search API。
+            </p>
+          </div>
+          <div style={styles.formGroup}>
+            <label style={styles.label}>Google 可编程搜索引擎 ID (CSE ID)</label>
+            <input
+              type="password"
+              style={styles.input}
+              placeholder="粘贴您的搜索引擎 ID"
+              value={config.googleCseId}
+              onChange={(e) => handleConfigChange("googleCseId", e.target.value)}
+            />
+             <p style={styles.fieldDescription}>
+                在 Programmable Search Engine 控制面板中创建并获取。
+            </p>
+          </div>
+        </>
       )}
 
       <div style={{...styles.formGroup, marginTop: '40px'}}>

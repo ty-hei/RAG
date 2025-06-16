@@ -455,7 +455,11 @@ async function searchWeb(plan: ResearchPlan, searchTerm: string, sessionId: stri
     const rawResults = await performWebSearch(
       config.webSearchProvider,
       searchTerm,
-      config.tavilyApiKey
+      { // 传递一个包含所有可能密钥的对象
+        tavilyApiKey: config.tavilyApiKey,
+        googleApiKey: config.googleApiKey,
+        googleCseId: config.googleCseId,
+      }
     );
 
     if (rawResults.length === 0) {

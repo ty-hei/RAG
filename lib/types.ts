@@ -17,9 +17,8 @@ export interface ScoredClinicalTrial extends FetchedClinicalTrial {
   reason: string;
 }
 
-// 【新增】用于存储网页搜索结果的类型
 export interface ScoredWebResult {
-  url: string;
+  url:string;
   title: string;
   content: string; // snippet or summary from search result
   score: number;
@@ -33,9 +32,12 @@ export interface LLMConfig {
   fastModel: string;
   smartModel: string;
   fetchRateLimit: number;
-  webSearchProvider: 'tavily' | 'none';
+  // ✅ 【变更】增加 'google' 选项
+  webSearchProvider: 'tavily' | 'google' | 'none';
   tavilyApiKey?: string;
-  // 【新增】NCBI API密钥字段
+  // ✅ 【新增】Google API 密钥和自定义搜索引擎 ID
+  googleApiKey?: string;
+  googleCseId?: string;
   ncbiApiKey?: string;
 }
 
