@@ -2,6 +2,12 @@
 
 export type Stage = 'IDLE' | 'PLANNING' | 'SCREENING' | 'GATHERING' | 'SYNTHESIZING' | 'DONE';
 
+// ✅ 【新增】用于存储关键词及其验证状态的类型
+export interface ValidatedKeyword {
+  term: string;
+  validated: boolean;
+}
+
 export interface FetchedClinicalTrial {
   nctId: string;
   title: string;
@@ -18,9 +24,9 @@ export interface ScoredClinicalTrial extends FetchedClinicalTrial {
 }
 
 export interface ScoredWebResult {
-  url:string;
+  url: string;
   title: string;
-  content: string; // snippet or summary from search result
+  content: string; 
   score: number;
   reason: string;
 }
@@ -32,10 +38,8 @@ export interface LLMConfig {
   fastModel: string;
   smartModel: string;
   fetchRateLimit: number;
-  // ✅ 【变更】增加 'google' 选项
   webSearchProvider: 'tavily' | 'google' | 'none';
   tavilyApiKey?: string;
-  // ✅ 【新增】Google API 密钥和自定义搜索引擎 ID
   googleApiKey?: string;
   googleCseId?: string;
   ncbiApiKey?: string;
@@ -44,7 +48,8 @@ export interface LLMConfig {
 export interface SubQuestion {
   id: string;
   question: string;
-  keywords: string[];
+  // ✅ 【变更】关键词现在是一个对象数组，而不再是简单的字符串数组
+  keywords: ValidatedKeyword[];
 }
 
 export interface ResearchPlan {

@@ -291,11 +291,13 @@ export const generateSearchQueriesPrompt = (plan: ResearchPlan): string => `
 
   **Research Plan:**
   - Main Topic: "${plan.clarification}"
-  - Sub-questions:
-    ${plan.subQuestions.map((sq, i) => `${i + 1}. ${sq.question}`).join('\n    ')}
+  - Sub-questions and their validated keywords:
+    ${plan.subQuestions.map((sq, i) => 
+      `${i + 1}. ${sq.question}\n     Keywords: ${sq.keywords.map(k => k.term).join(', ')}`
+    ).join('\n    ')}
 
   **Your Task:**
-  1.  Analyze all sub-questions to identify the core, overarching concepts.
+  1.  Analyze all sub-questions and their keywords to identify the core, overarching concepts.
   2.  Create a primary, powerful boolean query for **PubMed**. This query should be broad enough to cover the main topic but specific enough to yield relevant results. Combine related keywords with "OR" and group them with parentheses. Then, connect the conceptual groups with "AND".
   3.  Create a similar, potentially simpler query for **ClinicalTrials.gov**.
   4.  If the research plan contains a dedicated \`webQuery\`, use it for the web search. Otherwise, create a simple, non-boolean query for general web search.

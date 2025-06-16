@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from "react"
 import { useStore } from "./lib/store"
-import type { ResearchSession, Stage, FetchedArticle, ScoredArticle, ScoredClinicalTrial, ScoredWebResult } from "./lib/types"
+import type { ResearchSession, Stage, FetchedArticle, ScoredArticle, ScoredClinicalTrial, ScoredWebResult, ValidatedKeyword } from "./lib/types"
 
 // #region --- Helper Components ---
 
@@ -56,7 +56,9 @@ function SimpleMarkdownViewer({ content }: { content: string }) {
     const htmlContent = content
       .replace(/\n/g, '<br />')
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\[PMID:(\d+)\]/g, '<a href="https://pubmed.ncbi.nlm.nih.gov/$1/" target="_blank" rel="noopener noreferrer">[PMID:$1]</a>');
+      .replace(/\[PMID:(\d+)\]/g, '<a href="https://pubmed.ncbi.nlm.nih.gov/$1/" target="_blank" rel="noopener noreferrer">[PMID:$1]</a>')
+      .replace(/\[TRIAL:(NCT\d+)\]/g, '<a href="https://clinicaltrials.gov/study/$1" target="_blank" rel="noopener noreferrer">[TRIAL:$1]</a>')
+      .replace(/\[WEB:(https?:\/\/[^\]]+)\]/g, '<a href="$1" target="_blank" rel="noopener noreferrer">[WEB]</a>');
     
     return { __html: htmlContent };
   };
@@ -232,7 +234,9 @@ const ResearchPlanSection: React.FC<{ session: ResearchSession }> = ({ session }
       ...session.researchPlan!,
       subQuestions: session.researchPlan!.subQuestions.map(sq => 
         sq.id === subQuestionId 
-          ? (field === 'keywords' ? { ...sq, keywords: value.split(',').map(k => k.trim()) } : { ...sq, [field]: value }) 
+          ? (field === 'keywords' 
+              ? { ...sq, keywords: value.split(',').map(k => ({ term: k.trim(), validated: false })).filter(k => k.term) } 
+              : { ...sq, [field]: value }) 
           : sq
       )
     };
@@ -265,14 +269,22 @@ const ResearchPlanSection: React.FC<{ session: ResearchSession }> = ({ session }
 
   return (
     <Section title="第 1 步：研究计划" stage="PLANNING" completedStages={['SCREENING', 'GATHERING', 'SYNTHESIZING', 'DONE']}>
-        <p style={styles.description}>AI为您起草了以下计划。您可以直接编辑，或在下方通过对话让AI帮您修改。</p>
+        <p style={styles.description}>AI为您起草了以下计划。您可以直接编辑，或在下方通过对话让AI帮您修改。标记为 ✅ 的是经过MeSH验证的官方术语。</p>
         <div style={{ marginTop: '15px' }}><label style={styles.label}>AI 提出的澄清问题 (供您参考)</label><p style={styles.clarification}>{session.researchPlan.clarification}</p></div>
         {session.researchPlan.subQuestions.map((sq) => (
           <div key={sq.id} style={styles.planCard}>
             <label style={styles.label}>子问题</label>
             <textarea value={sq.question} onChange={(e) => handlePlanChange(sq.id, 'question', e.target.value)} style={styles.textareaSmall}/>
             <label style={{...styles.label, marginTop: '10px'}}>关键词 (逗号分隔)</label>
-            <input type="text" value={sq.keywords.join(', ')} onChange={(e) => handlePlanChange(sq.id, 'keywords', e.target.value)} style={styles.input}/>
+            <input 
+              type="text" 
+              value={sq.keywords.map(k => k.term + (k.validated ? ' ✅' : '')).join(', ')} 
+              onChange={(e) => {
+                const cleanValue = e.target.value.replace(/ ✅/g, '');
+                handlePlanChange(sq.id, 'keywords', cleanValue);
+              }} 
+              style={styles.input}
+            />
           </div>
         ))}
         {session.stage === 'PLANNING' && (
@@ -312,7 +324,7 @@ const ScreeningResultsSection: React.FC<{ session: ResearchSession }> = ({ sessi
       alert("请至少选择一篇文章。");
       return;
     }
-    updateActiveSession({ articlesToFetch, stage: 'GATHERING' });
+    updateActiveSession({ articlesToFetch, stage: 'GATHERING', gatheringIndex: 0 });
   };
 
   const hasScored = session.scoredAbstracts.length > 0;
@@ -337,7 +349,7 @@ const ScreeningResultsSection: React.FC<{ session: ResearchSession }> = ({ sessi
     );
   }
   
-  if (!session.loading && articles.length === 0) {
+  if (!session.loading && articles.length === 0 && session.clinicalTrials.length === 0 && session.webResults.length === 0) {
       return null;
   }
 
@@ -487,7 +499,9 @@ const ClinicalTrialsSection: React.FC<{ session: ResearchSession }> = ({ session
       <div style={styles.articleList}>
         {session.clinicalTrials.map((trial) => (
           <div key={trial.nctId} style={styles.articleItem}>
-            <h4 style={styles.articleTitle}>{trial.title}</h4>
+            <a href={trial.url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>
+              <h4 style={styles.articleTitle}>{trial.title}</h4>
+            </a>
             <p style={{ ...styles.articleMeta, fontStyle: 'italic', color: '#007bff' }}>
                 <strong>AI评分: {trial.score}/10</strong> - {trial.reason}
             </p>
@@ -498,9 +512,6 @@ const ClinicalTrialsSection: React.FC<{ session: ResearchSession }> = ({ session
               <p style={styles.articleAbstract}><strong>简介:</strong> {trial.summary}</p>
               <p style={{...styles.articleAbstract, marginTop: '5px'}}><strong>干预措施:</strong> {trial.interventions.join(', ')}</p>
             </details>
-            <a href={trial.url} target="_blank" rel="noopener noreferrer" style={{fontSize: '12px'}}>
-              在 ClinicalTrials.gov 上查看详情
-            </a>
           </div>
         ))}
       </div>
@@ -517,6 +528,7 @@ const FullTextGatheringSection: React.FC<{ session: ResearchSession }> = ({ sess
   }
 
   const handleSynthesizeClick = () => {
+    updateActiveSession({stage: 'SYNTHESIZING'});
     chrome.runtime.sendMessage({ type: 'SYNTHESIZE_REPORT', sessionId: session.id });
   }
   
@@ -633,7 +645,7 @@ function SidePanel() {
   
   useEffect(() => {
     const handleMessage = (message: any) => {
-      if (message.type === "STATE_UPDATED_FROM_BACKGROUND" || message.type === "ADD_TO_LOG") {
+      if (message.type === "STATE_UPDATED_FROM_BACKGROUND") {
         useStore.persist.rehydrate()
       }
     }
@@ -664,7 +676,11 @@ function SidePanel() {
          <h1>PubMed RAG 助理</h1>
          {activeSession && (
            <div>
-             <button onClick={() => resetActiveSession()} style={{...styles.deleteSessionButton, color: '#6c757d', borderColor: '#6c757d', marginRight: '10px'}} title="重置当前研究">重置</button>
+             <button onClick={() => {
+                if(confirm("您确定要重置这个研究项目吗？这会清除当前进度但保留会话。")){
+                    resetActiveSession()
+                }
+             }} style={{...styles.deleteSessionButton, color: '#6c757d', borderColor: '#6c757d', marginRight: '10px'}} title="重置当前研究">重置</button>
              <button onClick={handleDeleteCurrentSession} style={styles.deleteSessionButton} title="删除当前研究项目">删除</button>
            </div>
          )}
@@ -682,7 +698,7 @@ function SidePanel() {
             
             {activeSession.stage === 'PLANNING' && (
               activeSession.loading 
-                ? <div style={styles.loadingBox}><p>AI正在为您规划研究方向...</p></div> 
+                ? <div style={styles.loadingBox}><p>{activeSession.loadingMessage || 'AI正在为您规划研究方向...'}</p></div> 
                 : <ResearchPlanSection session={activeSession} />
             )}
 
@@ -690,7 +706,6 @@ function SidePanel() {
               <>
                 <ResearchPlanSection session={activeSession} />
                 <ScreeningResultsSection session={activeSession} />
-                {/* 【变更】确保WebResultsSection组件在此处被渲染 */}
                 <WebResultsSection session={activeSession} />
                 <ClinicalTrialsSection session={activeSession} />
                 <FullTextGatheringSection session={activeSession} />

@@ -13,7 +13,7 @@ import {
   clinicalTrialReviewerPrompt, 
   clinicalTrialSearchRefinerPrompt,
   webSearchReviewerPrompt,
-  generateSearchQueriesPrompt // ✅ 1. 导入新的 prompt
+  generateSearchQueriesPrompt 
 } from "./lib/prompts"
 import { useStore } from "./lib/store"
 import { performWebSearch } from "./lib/web-search";
@@ -24,7 +24,9 @@ import type {
   ScoredArticle, 
   FetchedClinicalTrial, 
   ScoredClinicalTrial,
-  ScoredWebResult
+  ScoredWebResult,
+  SubQuestion,
+  ValidatedKeyword
 } from "./lib/types"
 
 async function addToLog(sessionId: string, message: string) {
@@ -43,19 +45,71 @@ chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error
 chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   if (!tab.url) return;
   if (info.status !== "complete") return;
+  
   const url = new URL(tab.url);
-  if (url.origin === "https://pubmed.ncbi.nlm.nih.gov") {
+  const isPubMed = url.origin === "https://pubmed.ncbi.nlm.nih.gov";
+  
+  await useStore.persist.rehydrate();
+  const activeSession = useStore.getState().getActiveSession();
+  const isGathering = activeSession && activeSession.stage === 'GATHERING';
+
+  if (isPubMed) {
     await chrome.sidePanel.setOptions({ tabId, path: "sidepanel.html", enabled: true });
-  } else {
-    // 保持在全文页面时可用
-    const activeSession = useStore.getState().getActiveSession();
-    if (activeSession && activeSession.stage === 'GATHERING') {
-      await chrome.sidePanel.setOptions({ tabId, path: "sidepanel.html", enabled: true });
-    } else {
-      await chrome.sidePanel.setOptions({ tabId, enabled: false });
-    }
+  } 
+  else if (isGathering) {
+    await chrome.sidePanel.setOptions({ tabId, path: "sidepanel.html", enabled: true });
+  }
+  else {
+    await chrome.sidePanel.setOptions({ tabId, enabled: false });
   }
 });
+
+async function validateKeywordsWithMeSH(plan: ResearchPlan, config: LLMConfig): Promise<ResearchPlan> {
+  const apiKeyParam = config.ncbiApiKey ? `&api_key=${config.ncbiApiKey}` : "";
+  const newSubQuestions: SubQuestion[] = [];
+
+  for (const sq of plan.subQuestions) {
+    const keywordsAsStrings = (sq.keywords as any[]).map(k => (typeof k === 'string' ? k : k.term)).filter(Boolean);
+    const validatedKeywords: ValidatedKeyword[] = [];
+
+    for (const keyword of keywordsAsStrings) {
+      const delay = config.ncbiApiKey ? 110 : 350;
+      await new Promise(res => setTimeout(res, delay));
+
+      const url = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=mesh&term=${encodeURIComponent(
+        keyword
+      )}&retmode=json${apiKeyParam}`;
+      
+      try {
+        const response = await fetch(url);
+        if (!response.ok) {
+          validatedKeywords.push({ term: keyword, validated: false });
+          continue; 
+        }
+        const data = await response.json();
+        
+        // ✅ 【核心修正】使用更可靠的 `querytranslation` 字段来判断是否成功映射到MeSH词条
+        const queryTranslation = data.esearchresult?.querytranslation || "";
+        
+        // 如果翻译结果中包含 "[mesh terms]"，则认为该关键词是有效的MeSH术语或可由MeSH术语组成。
+        if (queryTranslation.toLowerCase().includes("[mesh terms]")) {
+          // 我们将原始关键词标记为已验证，以保留用户的原始意图（例如，保留"B cell depletion"而不是只用"B-Lymphocytes"）
+          validatedKeywords.push({ term: keyword, validated: true });
+        } else {
+          validatedKeywords.push({ term: keyword, validated: false });
+        }
+
+      } catch (error) {
+        console.warn(`MeSH validation failed for "${keyword}":`, error);
+        validatedKeywords.push({ term: keyword, validated: false });
+      }
+    }
+    newSubQuestions.push({ ...sq, keywords: validatedKeywords });
+  }
+
+  return { ...plan, subQuestions: newSubQuestions };
+}
+
 
 chrome.runtime.onMessage.addListener(async (message) => {
   if (message.type === "START_RESEARCH") {
@@ -102,8 +156,11 @@ async function handleStartResearch(topic: string, sessionId: string) {
     let plan: ResearchPlan = JSON.parse(cleanedResponse);
     plan = ensureSubQuestionIds(plan);
     
-    await addToLog(sessionId, "研究计划已生成，等待用户审核。");
-    updateSessionById(sessionId, { researchPlan: plan, stage: "PLANNING", loading: false });
+    await addToLog(sessionId, "计划草案已生成，正在验证关键词...");
+    const validatedPlan = await validateKeywordsWithMeSH(plan, config);
+    
+    await addToLog(sessionId, "关键词验证完成，等待用户审核。");
+    updateSessionById(sessionId, { researchPlan: validatedPlan, stage: "PLANNING", loading: false });
 
   } catch (err) {
     const errorMessage = err instanceof SyntaxError ? "无法解析AI模型的返回结果，请稍后重试。" : err.message
@@ -143,9 +200,12 @@ async function handleRefinePlan(sessionId: string, feedback: string) {
     const cleanedResponse = llmResponse.trim().replace(/^```json\s*/, "").replace(/\s*```$/, "");
     let refinedPlan: ResearchPlan = JSON.parse(cleanedResponse);
     refinedPlan = ensureSubQuestionIds(refinedPlan);
-    
-    await addToLog(sessionId, "计划已根据反馈优化，等待用户审核。");
-    updateSessionById(sessionId, { researchPlan: refinedPlan, loading: false });
+
+    await addToLog(sessionId, "优化计划已生成，正在重新验证关键词...");
+    const validatedPlan = await validateKeywordsWithMeSH(refinedPlan, config);
+
+    await addToLog(sessionId, "关键词验证完成，等待用户审核。");
+    updateSessionById(sessionId, { researchPlan: validatedPlan, loading: false });
   } catch (err) {
     const errorMessage = err instanceof SyntaxError ? "无法解析AI模型的返回结果，请稍后重试。" : err.message;
     await addToLog(sessionId, `错误: ${errorMessage}`);
@@ -182,7 +242,6 @@ async function handleExecuteSearch(plan: ResearchPlan, sessionId: string) {
   notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
 
   try {
-    // ✅ 2. 【核心变更】使用新的 LLM 调用来生成智能检索词
     const storage = new Storage({ area: "local" })
     const config = await storage.get<LLMConfig>("llmConfig")
     if (!config?.apiKey) throw new Error("API密钥未配置。请在设置页面中设置。")
@@ -210,7 +269,6 @@ async function handleExecuteSearch(plan: ResearchPlan, sessionId: string) {
     });
     notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
 
-    // ✅ 3. 并行执行所有搜索
     await Promise.all([
       searchPubMed(plan, pubmedQuery, sessionId),
       searchClinicalTrials(plan, clinicalTrialQuery, sessionId),
@@ -300,9 +358,8 @@ async function searchPubMed(plan: ResearchPlan, searchTerm: string, sessionId: s
                 const foundPimds: string[] = supplEsearchData.esearchresult?.idlist || [];
                 foundPimds.forEach(pmid => newPmids.add(pmid));
             }
-            if (!config.ncbiApiKey) {
-                await new Promise(resolve => setTimeout(resolve, 350));
-            }
+            const delay = config.ncbiApiKey ? 110 : 350;
+            await new Promise(resolve => setTimeout(resolve, delay));
         }
         
         const existingPmidSet = new Set(combinedArticles.map(a => a.pmid));
@@ -388,7 +445,6 @@ async function searchClinicalTrials(plan: ResearchPlan, searchTerm: string, sess
             if (new_queries && new_queries.length > 0) {
                 await addToLog(sessionId, `[ClinicalTrials.gov] AI识别到知识缺口，执行 ${new_queries.length} 个补充检索...`);
                 
-                // 更新UI中显示的完整查询
                 const fullQueryForDisplay = `${searchTerm}\n\n补充检索:\n- ${new_queries.join('\n- ')}`;
                 updateSessionById(sessionId, { clinicalTrialsQuery: fullQueryForDisplay });
 
@@ -433,7 +489,7 @@ async function searchClinicalTrials(plan: ResearchPlan, searchTerm: string, sess
 
     } catch (error) {
         await addToLog(sessionId, `[ClinicalTrials.gov] 检索或分析失败: ${error.message}`);
-        throw error; // Re-throw to be caught by the main handler
+        throw error; 
     }
 }
 
@@ -444,7 +500,7 @@ async function searchWeb(plan: ResearchPlan, searchTerm: string, sessionId: stri
     const storage = new Storage({ area: "local" });
     const config = await storage.get<LLMConfig>("llmConfig");
 
-    if (!config || config.webSearchProvider === 'none' || (config.webSearchProvider === 'tavily' && !config.tavilyApiKey)) {
+    if (!config || config.webSearchProvider === 'none') {
       await addToLog(sessionId, `[Web Search] 跳过：未配置或未启用Web搜索服务。`);
       return;
     }
@@ -455,7 +511,7 @@ async function searchWeb(plan: ResearchPlan, searchTerm: string, sessionId: stri
     const rawResults = await performWebSearch(
       config.webSearchProvider,
       searchTerm,
-      { // 传递一个包含所有可能密钥的对象
+      {
         tavilyApiKey: config.tavilyApiKey,
         googleApiKey: config.googleApiKey,
         googleCseId: config.googleCseId,
@@ -483,16 +539,15 @@ async function searchWeb(plan: ResearchPlan, searchTerm: string, sessionId: stri
 
   } catch (error) {
     await addToLog(sessionId, `[Web Search] 网页检索或分析失败: ${error.message}`);
-    // Re-throw to be caught by the main handler in handleExecuteSearch
     throw error;
   }
 }
 
-function ensureSubQuestionIds(plan: ResearchPlan) {
+function ensureSubQuestionIds(plan: ResearchPlan): ResearchPlan {
   const seenIds = new Set<string>();
   const updatedSubQuestions = plan.subQuestions.map(sq => {
     let newId = sq.id;
-    if (!newId || seenIds.has(newId)) newId = uuidv4();
+    if (!newId || seenIds.has(newId)) newId = `sq_${uuidv4()}`;
     seenIds.add(newId);
     return { ...sq, id: newId };
   });
@@ -516,7 +571,7 @@ async function handleStartGathering(sessionId: string, articles: ScoredArticle[]
 }
 
 async function handleScrapeActiveTab(sessionId: string, pmid: string) {
-  const { updateSessionById, sessions } = useStore.getState();
+  const { updateSessionById, getActiveSession } = useStore.getState();
   await useStore.persist.rehydrate();
   
   await addToLog(sessionId, `请求抓取当前标签页内容 (目标PMID: ${pmid})...`);
@@ -528,6 +583,10 @@ async function handleScrapeActiveTab(sessionId: string, pmid: string) {
     if (!tabs[0] || !tabs[0].id) throw new Error("找不到有效的激活标签页。");
     
     const tabId = tabs[0].id;
+    await chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        files: ["contents/scraper.js"]
+    });
     chrome.tabs.sendMessage(tabId, { type: "DO_SCRAPE" });
 
     const scrapedText = await new Promise<string>((resolve, reject) => {
@@ -544,8 +603,8 @@ async function handleScrapeActiveTab(sessionId: string, pmid: string) {
         reject(new Error("抓取超时 (20秒)。"));
       }, 20000);
     });
-
-    const session = sessions.find(s => s.id === sessionId);
+    
+    const session = getActiveSession();
     if (session) {
       const newFullTexts = [...session.fullTexts, { pmid, text: scrapedText }];
       await addToLog(sessionId, `PMID ${pmid} 的全文抓取成功。`);
@@ -564,17 +623,17 @@ async function handleScrapeActiveTab(sessionId: string, pmid: string) {
 }
 
 async function handleSynthesizeReport(sessionId: string) {
-  const { updateSessionById, sessions } = useStore.getState();
+  const { updateSessionById, getActiveSession } = useStore.getState();
   await useStore.persist.rehydrate();
   
-  const session = useStore.getState().sessions.find(s => s.id === sessionId);
+  const session = getActiveSession();
   if (!session) {
       await addToLog(sessionId, "错误: 无法找到当前会话以生成报告。");
       return;
   }
   
   await addToLog(sessionId, "所有信息源已就绪，开始生成深度综述报告...");
-  updateSessionById(sessionId, { stage: 'SYNTHESIZING', loading: true, error: null });
+  updateSessionById(sessionId, { stage: 'SYNTHESIZING', loading: true, error: null, lastFailedAction: null });
   notifySidePanel({ type: "STATE_UPDATED_FROM_BACKGROUND" });
   
   try {
