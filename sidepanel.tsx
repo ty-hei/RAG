@@ -3,11 +3,14 @@
 import React, { useState, useEffect, useMemo, useRef } from "react"
 import { useStore } from "./lib/store"
 import type { ResearchSession, Stage, FetchedArticle, ScoredArticle, ScoredClinicalTrial, ScoredWebResult, ValidatedKeyword } from "./lib/types"
+import { useThemeStore, type Theme } from "./lib/theme-store"
 
 // #region --- Helper Components ---
 
 const ErrorRetryComponent: React.FC<{ session: ResearchSession }> = ({ session }) => {
     const { updateSessionById, resetActiveSession } = useStore();
+    const { theme } = useThemeStore();
+    const styles = theme === 'dark' ? darkStyles : lightStyles;
 
     if (!session.error) {
         return null;
@@ -26,13 +29,23 @@ const ErrorRetryComponent: React.FC<{ session: ResearchSession }> = ({ session }
         }
     };
 
+    const isApiKeyError = session.error.includes("API密钥未配置");
+
+    const handleOpenOptions = () => {
+        chrome.runtime.openOptionsPage();
+    };
+
     return (
         <div style={styles.errorBox}>
-            <h4>发生错误</h4>
-            <p>{session.error}</p>
+            <h4 style={{margin: 0, marginBottom: '10px'}}>发生错误</h4>
+            <p style={{margin: 0}}>{session.error}</p>
             <div style={{ marginTop: '10px', display: 'flex', gap: '10px' }}>
-                {session.lastFailedAction && (
-                    <button onClick={handleRetry} style={{...styles.button, backgroundColor: '#28a745', flex: 1}}>重试</button>
+                {isApiKeyError ? (
+                    <button onClick={handleOpenOptions} style={{...styles.button, backgroundColor: '#007bff', flex: 1}}>前往设置</button>
+                ) : (
+                    session.lastFailedAction && (
+                        <button onClick={handleRetry} style={{...styles.button, backgroundColor: '#28a745', flex: 1}}>重试</button>
+                    )
                 )}
                 <button onClick={handleReset} style={{...styles.button, backgroundColor: '#6c757d', flex: 1}}>重置研究</button>
             </div>
@@ -42,6 +55,8 @@ const ErrorRetryComponent: React.FC<{ session: ResearchSession }> = ({ session }
 
 function SimpleMarkdownViewer({ content }: { content: string }) {
   const [copyStatus, setCopyStatus] = useState('复制报告');
+  const { theme } = useThemeStore();
+  const styles = theme === 'dark' ? darkStyles : lightStyles;
 
   const handleCopy = () => {
     navigator.clipboard.writeText(content).then(() => {
@@ -53,12 +68,13 @@ function SimpleMarkdownViewer({ content }: { content: string }) {
   };
 
   const renderContent = () => {
+    const linkColor = theme === 'dark' ? '#9cdcfe' : '#0056b3';
     const htmlContent = content
       .replace(/\n/g, '<br />')
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\[PMID:(\d+)\]/g, '<a href="https://pubmed.ncbi.nlm.nih.gov/$1/" target="_blank" rel="noopener noreferrer">[PMID:$1]</a>')
-      .replace(/\[TRIAL:(NCT\d+)\]/g, '<a href="https://clinicaltrials.gov/study/$1" target="_blank" rel="noopener noreferrer">[TRIAL:$1]</a>')
-      .replace(/\[WEB:(https?:\/\/[^\]]+)\]/g, '<a href="$1" target="_blank" rel="noopener noreferrer">[WEB]</a>');
+      .replace(/\[PMID:(\d+)\]/g, `<a href="https://pubmed.ncbi.nlm.nih.gov/$1/" target="_blank" rel="noopener noreferrer" style="color: ${linkColor}; text-decoration: none;">[PMID:$1]</a>`)
+      .replace(/\[TRIAL:(NCT\d+)\]/g, `<a href="https://clinicaltrials.gov/study/$1" target="_blank" rel="noopener noreferrer" style="color: ${linkColor}; text-decoration: none;">[TRIAL:$1]</a>`)
+      .replace(/\[WEB:(https?:\/\/[^\]]+)\]/g, `<a href="$1" target="_blank" rel="noopener noreferrer" style="color: ${linkColor}; text-decoration: none;">[WEB]</a>`);
     
     return { __html: htmlContent };
   };
@@ -75,6 +91,8 @@ function SimpleMarkdownViewer({ content }: { content: string }) {
 
 function SessionManager() {
   const { sessions, activeSessionId, switchSession, addSession } = useStore()
+  const { theme } = useThemeStore();
+  const styles = theme === 'dark' ? darkStyles : lightStyles;
   
   const handleNewResearch = () => {
     const newTopic = prompt("请输入新研究的主题：", "未命名研究");
@@ -116,6 +134,8 @@ const Section: React.FC<{
 }> = ({ title, stage, completedStages, children, isLoading = false, loadingText }) => {
   const isCompleted = completedStages.includes(stage);
   const [isExpanded, setIsExpanded] = useState(!isCompleted);
+  const { theme } = useThemeStore();
+  const styles = theme === 'dark' ? darkStyles : lightStyles;
 
   useEffect(() => {
     setIsExpanded(!completedStages.includes(stage));
@@ -140,6 +160,8 @@ const Section: React.FC<{
 
 const StrategyLogSection: React.FC<{ session: ResearchSession }> = ({ session }) => {
     const logContainerRef = useRef<HTMLDivElement>(null);
+    const { theme } = useThemeStore();
+    const styles = theme === 'dark' ? darkStyles : lightStyles;
 
     useEffect(() => {
         if (logContainerRef.current) {
@@ -175,6 +197,8 @@ const InitialSection: React.FC<{
 }> = ({ session, onStart }) => {
   const [topic, setTopic] = useState(session?.topic || "");
   const [validationError, setValidationError] = useState<string|null>(null);
+  const { theme } = useThemeStore();
+  const styles = theme === 'dark' ? darkStyles : lightStyles;
 
   useEffect(() => {
     setTopic(session?.topic || "");
@@ -190,8 +214,8 @@ const InitialSection: React.FC<{
   };
   
   return (
-    <div style={{padding: '0 15px 15px'}}>
-       <h3>您想研究什么？</h3>
+    <div style={{padding: '15px'}}>
+       <h3 style={{color: styles.label.color}}>您想研究什么？</h3>
        <p style={styles.description}>选择一个已有研究，或在下方输入新主题开始。</p>
        <textarea value={topic} onChange={(e) => { setTopic(e.target.value); if (validationError) setValidationError(null); }} placeholder="例如：肠道菌群与抑郁症的最新研究进展" style={{ ...styles.textarea, ...(validationError ? styles.inputError : {}) }} />
        {validationError && <p style={styles.errorText}>{validationError}</p>}
@@ -206,6 +230,8 @@ const ResearchPlanSection: React.FC<{ session: ResearchSession }> = ({ session }
   const { updateActiveSession } = useStore();
   const [refinementRequest, setRefinementRequest] = useState("");
   const [isRefining, setIsRefining] = useState(false);
+  const { theme } = useThemeStore();
+  const styles = theme === 'dark' ? darkStyles : lightStyles;
 
   useEffect(() => {
     if (!session.loading) {
@@ -297,7 +323,7 @@ const ResearchPlanSection: React.FC<{ session: ResearchSession }> = ({ session }
                   {isRefining ? "正在思考..." : "发送修改意见给AI"}
               </button>
             </div>
-            <hr style={{border: 'none', borderTop: '1px solid #eee', margin: '20px 0'}}/>
+            <hr style={{border: 'none', borderTop: `1px solid ${theme === 'dark' ? '#333' : '#eee'}`, margin: '20px 0'}}/>
             <button onClick={handleConfirmPlan} style={{...styles.button, backgroundColor: '#28a745', width: '100%'}}>
               计划确认，开始检索文献
             </button>
@@ -310,6 +336,8 @@ const ResearchPlanSection: React.FC<{ session: ResearchSession }> = ({ session }
 const ScreeningResultsSection: React.FC<{ session: ResearchSession }> = ({ session }) => {
   const [selectedPmids, setSelectedPmids] = useState<Set<string>>(new Set());
   const { updateActiveSession } = useStore();
+  const { theme } = useThemeStore();
+  const styles = theme === 'dark' ? darkStyles : lightStyles;
 
   const handleSelectionChange = (pmid: string) => {
     const newSelection = new Set(selectedPmids);
@@ -395,7 +423,7 @@ const ScreeningResultsSection: React.FC<{ session: ResearchSession }> = ({ sessi
               <div style={{ flex: 1 }}>
                 <h4 style={styles.articleTitle}>{article.title}</h4>
                 {(article as ScoredArticle).score !== undefined ? (
-                  <p style={{ ...styles.articleMeta, fontStyle: 'italic', color: '#007bff' }}>
+                  <p style={{ ...styles.articleMeta, fontStyle: 'italic', color: theme === 'dark' ? '#00aaff' : '#007bff' }}>
                     <strong>AI评分: {(article as ScoredArticle).score}/10</strong> - {(article as ScoredArticle).reason}
                   </p>
                 ) : (
@@ -420,6 +448,9 @@ const ScreeningResultsSection: React.FC<{ session: ResearchSession }> = ({ sessi
 };
 
 const WebResultsSection: React.FC<{ session: ResearchSession }> = ({ session }) => {
+  const { theme } = useThemeStore();
+  const styles = theme === 'dark' ? darkStyles : lightStyles;
+
   if (session.webResults.length === 0) {
     return null;
   }
@@ -437,15 +468,15 @@ const WebResultsSection: React.FC<{ session: ResearchSession }> = ({ session }) 
         {session.webResults.map((result, index) => (
           <div key={index} style={styles.articleItem}>
             <a href={result.url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>
-                <h4 style={{...styles.articleTitle, color: '#0056b3'}}>{result.title}</h4>
+                <h4 style={{...styles.articleTitle, color: theme === 'dark' ? '#9cdcfe' : '#0056b3'}}>{result.title}</h4>
             </a>
             <p style={{ ...styles.articleMeta, fontStyle: 'italic', color: '#28a745' }}>
                 <strong>AI评分: {result.score}/10</strong> - {result.reason}
             </p>
-             <p style={{...styles.articleMeta, color: '#555', maxHeight: '5em', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+             <p style={{...styles.articleMeta, color: styles.description.color, maxHeight: '5em', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {result.content}
             </p>
-            <a href={result.url} target="_blank" rel="noopener noreferrer" style={{fontSize: '12px'}}>
+            <a href={result.url} target="_blank" rel="noopener noreferrer" style={{fontSize: '12px', color: styles.summary.color}}>
               访问页面
             </a>
           </div>
@@ -456,6 +487,9 @@ const WebResultsSection: React.FC<{ session: ResearchSession }> = ({ session }) 
 };
 
 const ClinicalTrialsSection: React.FC<{ session: ResearchSession }> = ({ session }) => {
+  const { theme } = useThemeStore();
+  const styles = theme === 'dark' ? darkStyles : lightStyles;
+
   if (session.clinicalTrials.length === 0 && !session.clinicalTrialsQuery) {
     return null;
   }
@@ -502,7 +536,7 @@ const ClinicalTrialsSection: React.FC<{ session: ResearchSession }> = ({ session
             <a href={trial.url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>
               <h4 style={styles.articleTitle}>{trial.title}</h4>
             </a>
-            <p style={{ ...styles.articleMeta, fontStyle: 'italic', color: '#007bff' }}>
+            <p style={{ ...styles.articleMeta, fontStyle: 'italic', color: theme === 'dark' ? '#00aaff' : '#007bff' }}>
                 <strong>AI评分: {trial.score}/10</strong> - {trial.reason}
             </p>
             <p style={{...styles.articleMeta}}><strong>ID:</strong> {trial.nctId} | <strong>状态:</strong> {trial.status}</p>
@@ -522,6 +556,8 @@ const ClinicalTrialsSection: React.FC<{ session: ResearchSession }> = ({ session
 const FullTextGatheringSection: React.FC<{ session: ResearchSession }> = ({ session }) => {
   const { updateActiveSession } = useStore();
   const [copyStatus, setCopyStatus] = useState("复制所有全文");
+  const { theme } = useThemeStore();
+  const styles = theme === 'dark' ? darkStyles : lightStyles;
 
   const handleScrapeClick = (pmid: string) => {
     chrome.runtime.sendMessage({ type: 'SCRAPE_ACTIVE_TAB', sessionId: session.id, pmid: pmid });
@@ -601,15 +637,23 @@ const FullTextGatheringSection: React.FC<{ session: ResearchSession }> = ({ sess
               <p style={styles.description}>请按以下步骤操作，抓取下一篇文章的全文：</p>
               <div style={styles.planCard}>
                 <p><strong>待处理 ({session.gatheringIndex + 1}/{totalToFetch}):</strong> {currentArticle.title} (PMID: {currentArticle.pmid})</p>
-                <ol style={{paddingLeft: '20px', fontSize: '14px'}}>
+                <ol style={{paddingLeft: '20px', fontSize: '14px', lineHeight: 1.6}}>
                   <li>点击下方按钮，在新标签页中打开文章的PubMed页面。</li>
-                  <li>在打开的页面中，通过DOI或其他链接，**手动导航**到文章全文页面。</li>
+                  <li>在打开的页面中，通过DOI或其他链接，<strong style={{ color: theme === 'dark' ? '#FFD700' : '#B22222' }}>手动导航</strong>到文章全文页面。</li>
                   <li>确认全文加载完毕后，回到本侧边栏，点击“抓取当前页面”按钮。</li>
                   <li>如果无法访问或不需此文，可直接“跳过此文”。</li>
                 </ol>
-                <button onClick={() => chrome.tabs.create({ url: `https://pubmed.ncbi.nlm.nih.gov/${currentArticle.pmid}/`})} style={styles.buttonSecondary}>
-                  1. 打开PubMed页面
-                </button>
+                <button 
+  onClick={() => {
+    const url = currentArticle.pmcid
+      ? `https://www.ncbi.nlm.nih.gov/pmc/articles/${currentArticle.pmcid}/`
+      : `https://pubmed.ncbi.nlm.nih.gov/${currentArticle.pmid}/`;
+    chrome.tabs.create({ url });
+  }} 
+  style={styles.buttonSecondary}
+>
+  1. 打开PubMed/PMC页面
+</button>
                 <button onClick={() => handleScrapeClick(currentArticle.pmid)} disabled={session.loading} style={{...styles.button, ...(session.loading ? styles.buttonDisabled : {}), marginLeft: '10px'}}>
                   {session.loading ? '抓取中...' : '2. 抓取当前页面'}
                 </button>
@@ -637,11 +681,26 @@ const FinalReportSection: React.FC<{ session: ResearchSession }> = ({ session })
 
 // #endregion --- Stage Sections ---
 
+function ThemeToggleButton() {
+  const { theme, toggleTheme } = useThemeStore();
+  const styles = theme === 'dark' ? darkStyles : lightStyles;
+  return (
+    <button 
+      onClick={toggleTheme} 
+      style={styles.themeToggleButton}
+      title={`切换到${theme === 'dark' ? '亮色' : '暗色'}模式`}
+    >
+      {theme === 'dark' ? '☀️' : '🌙'}
+    </button>
+  );
+}
 
 function SidePanel() {
   const { addSession, deleteSession, resetActiveSession } = useStore()
   const { sessions, activeSessionId } = useStore();
+  const { theme } = useThemeStore();
   const activeSession = useMemo(() => sessions.find(s => s.id === activeSessionId), [sessions, activeSessionId]);
+  const styles = theme === 'dark' ? darkStyles : lightStyles;
   
   useEffect(() => {
     const handleMessage = (message: any) => {
@@ -673,17 +732,20 @@ function SidePanel() {
     <div style={styles.container}>
       <SessionManager />
       <div style={styles.header}>
-         <h1>PubMed RAG 助理</h1>
-         {activeSession && (
-           <div>
-             <button onClick={() => {
-                if(confirm("您确定要重置这个研究项目吗？这会清除当前进度但保留会话。")){
-                    resetActiveSession()
-                }
-             }} style={{...styles.deleteSessionButton, color: '#6c757d', borderColor: '#6c757d', marginRight: '10px'}} title="重置当前研究">重置</button>
-             <button onClick={handleDeleteCurrentSession} style={styles.deleteSessionButton} title="删除当前研究项目">删除</button>
-           </div>
-         )}
+         <h1 style={{fontSize: '18px', margin: 0, color: styles.header.color}}>PubMed RAG 助理</h1>
+         <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
+          <ThemeToggleButton />
+          {activeSession && (
+            <div style={{display: 'flex', gap: '10px'}}>
+              <button onClick={() => {
+                  if(confirm("您确定要重置这个研究项目吗？这会清除当前进度但保留会话。")){
+                      resetActiveSession()
+                  }
+              }} style={{...styles.deleteSessionButton, color: '#a0a0a0', borderColor: '#555'}} title="重置当前研究">重置</button>
+              <button onClick={handleDeleteCurrentSession} style={styles.deleteSessionButton} title="删除当前研究项目">删除</button>
+            </div>
+          )}
+         </div>
       </div>
       <div style={styles.mainContent}>
         {activeSession && <StrategyLogSection session={activeSession} />}
@@ -720,20 +782,21 @@ function SidePanel() {
   )
 }
 
-const styles: { [key: string]: React.CSSProperties } = {
+const lightStyles: { [key: string]: React.CSSProperties } = {
   container: { display: 'flex', flexDirection: 'column', height: '100vh', fontFamily: "sans-serif", backgroundColor: '#f0f2f5' },
   header: {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
     padding: '10px 15px',
     backgroundColor: '#fff',
-    borderBottom: '1px solid #dee2e6'
+    borderBottom: '1px solid #dee2e6',
+    color: '#000'
   },
   mainContent: { flex: 1, overflowY: 'auto' },
   sessionManager: { display: 'flex', padding: '10px', backgroundColor: '#f8f9fa', borderBottom: '1px solid #dee2e6', gap: '10px' },
   sessionSelect: { flex: 1, padding: '5px', borderRadius: '4px', border: '1px solid #ccc' },
   newSessionButton: { padding: '5px 10px', cursor: 'pointer', border: '1px solid #007bff', backgroundColor: 'white', color: '#007bff', borderRadius: '4px' },
   deleteSessionButton: { padding: '4px 8px', fontSize: '12px', cursor: 'pointer', border: '1px solid #dc3545', backgroundColor: 'transparent', color: '#dc3545', borderRadius: '4px'},
-  description: { fontSize: 14, color: '#555', marginTop: 0 },
+  description: { fontSize: 14, color: '#555', marginTop: 0, lineHeight: 1.6 },
   textarea: { width: '100%', minHeight: '80px', boxSizing: 'border-box', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', marginTop: '5px' },
   textareaSmall: { width: '100%', minHeight: '50px', boxSizing: 'border-box', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', marginTop: '5px' },
   input: { width: '100%', boxSizing: 'border-box', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', marginTop: '5px' },
@@ -746,19 +809,19 @@ const styles: { [key: string]: React.CSSProperties } = {
   successBox: { padding: '15px', backgroundColor: '#e8f5e9', border: '1px solid #66bb6a', borderRadius: '5px', color: '#2e7d32' },
   loadingBox: { textAlign: 'center', padding: '40px 20px', color: '#555' },
   planCard: { position: 'relative', border: '1px solid #e0e0e0', padding: '15px', margin: '10px 0', borderRadius: '8px', backgroundColor: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' },
-  label: { fontWeight: 'bold', display: 'block', fontSize: '14px', marginBottom: '5px' },
+  label: { fontWeight: 'bold', display: 'block', fontSize: '14px', marginBottom: '5px', color: '#000' },
   clarification: { fontStyle: 'italic', color: '#555', background: '#f8f9fa', padding: '10px', borderRadius: '5px', border: '1px solid #eee' },
   refinementBox: { marginTop: '25px', padding: '15px', border: '1px dashed #007bff', borderRadius: '8px', backgroundColor: 'rgba(0, 123, 255, 0.05)'},
   articleList: { maxHeight: '40vh', overflowY: 'auto', border: '1px solid #eee', padding: '5px', borderRadius: '5px' },
   articleItem: { borderBottom: '1px solid #eee', padding: '10px' },
-  articleTitle: { margin: 0, fontSize: '14px', fontWeight: 'bold' },
+  articleTitle: { margin: 0, fontSize: '14px', fontWeight: 'bold', color: '#0056b3' },
   articleMeta: { margin: '5px 0', fontSize: '12px', color: '#333' },
   articleDetails: { marginTop: '8px', fontSize: '12px', cursor: 'pointer' },
   articleAbstract: { margin: '5px 0', paddingLeft: '10px', borderLeft: '3px solid #eee', color: '#555', lineHeight: 1.5, whiteSpace: 'pre-wrap' },
   reportContent: { marginTop: '20px', padding: '15px', backgroundColor: '#fff', borderRadius: '5px', border: '1px solid #dee2e6', lineHeight: 1.6, whiteSpace: 'pre-wrap', fontFamily: 'serif' },
   section: {
     backgroundColor: '#ffffff',
-    margin: '0 15px 15px 15px',
+    margin: '15px',
     borderRadius: '8px',
     border: '1px solid #dee2e6',
     boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
@@ -841,6 +904,350 @@ const styles: { [key: string]: React.CSSProperties } = {
     margin: '10px 0',
     border: '1px dashed #007bff'
   },
+  themeToggleButton: {
+    background: 'none',
+    border: '1px solid #ccc',
+    borderRadius: '5px',
+    cursor: 'pointer',
+    fontSize: '18px',
+    padding: '4px 8px'
+  }
+};
+
+const darkStyles: { [key: string]: React.CSSProperties } = {
+  // --- Base & Layout ---
+  container: { 
+    display: 'flex', 
+    flexDirection: 'column', 
+    height: '100vh', 
+    fontFamily: "'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif", 
+    backgroundColor: '#1e1e1e', // Dark background
+    color: '#d4d4d4' // Light text
+  },
+  header: {
+    display: 'flex', 
+    justifyContent: 'space-between', 
+    alignItems: 'center',
+    padding: '10px 15px',
+    backgroundColor: '#252526', // Slightly lighter dark
+    borderBottom: '1px solid #333',
+    color: '#d4d4d4'
+  },
+  mainContent: { 
+    flex: 1, 
+    overflowY: 'auto',
+    padding: '0'
+  },
+  
+  // --- Session Management ---
+  sessionManager: { 
+    display: 'flex', 
+    padding: '10px', 
+    backgroundColor: '#252526', 
+    borderBottom: '1px solid #333', 
+    gap: '10px' 
+  },
+  sessionSelect: { 
+    flex: 1, 
+    padding: '8px', 
+    borderRadius: '4px', 
+    border: '1px solid #3c3c3c',
+    backgroundColor: '#333',
+    color: '#d4d4d4',
+    cursor: 'pointer'
+  },
+  newSessionButton: { 
+    padding: '8px 12px', 
+    cursor: 'pointer', 
+    border: '1px solid #007acc', 
+    backgroundColor: '#333', 
+    color: '#00aaff', 
+    borderRadius: '4px',
+    transition: 'background-color 0.2s, color 0.2s'
+  },
+  deleteSessionButton: { 
+    padding: '4px 8px', 
+    fontSize: '12px', 
+    cursor: 'pointer', 
+    border: '1px solid #c94e4e', 
+    backgroundColor: 'transparent', 
+    color: '#f48771', 
+    borderRadius: '4px',
+    transition: 'background-color 0.2s, color 0.2s'
+  },
+
+  // --- General Components ---
+  description: { 
+    fontSize: 14, 
+    color: '#a0a0a0', // Softer light text
+    marginTop: 0,
+    lineHeight: 1.6
+  },
+  textarea: { 
+    width: '100%', 
+    minHeight: '80px', 
+    boxSizing: 'border-box', 
+    padding: '10px', 
+    borderRadius: '4px', 
+    border: '1px solid #3c3c3c', 
+    marginTop: '5px',
+    backgroundColor: '#2a2a2a',
+    color: '#d4d4d4'
+  },
+  textareaSmall: { 
+    width: '100%', 
+    minHeight: '50px', 
+    boxSizing: 'border-box', 
+    padding: '10px', 
+    borderRadius: '4px', 
+    border: '1px solid #3c3c3c', 
+    marginTop: '5px',
+    backgroundColor: '#2a2a2a',
+    color: '#d4d4d4'
+  },
+  input: { 
+    width: '100%', 
+    boxSizing: 'border-box', 
+    padding: '10px', 
+    borderRadius: '4px', 
+    border: '1px solid #3c3c3c', 
+    marginTop: '5px',
+    backgroundColor: '#2a2a2a',
+    color: '#d4d4d4'
+  },
+  button: { 
+    width: 'auto', 
+    padding: '10px 20px', 
+    marginTop: '10px', 
+    backgroundColor: "#007acc", 
+    color: "white", 
+    border: "none", 
+    borderRadius: 5, 
+    cursor: "pointer", 
+    fontSize: 16, 
+    fontWeight: 'bold',
+    transition: 'background-color 0.2s, transform 0.1s' 
+  },
+  buttonSecondary: { 
+    width: 'auto', 
+    padding: '8px 15px', 
+    marginTop: '10px', 
+    backgroundColor: "transparent", 
+    color: "#00aaff", 
+    border: "1px solid #007acc", 
+    borderRadius: 5, 
+    cursor: "pointer", 
+    fontSize: 14,
+    transition: 'background-color 0.2s, color 0.2s'
+  },
+  buttonDisabled: { 
+    backgroundColor: "#555", 
+    color: '#999',
+    cursor: "not-allowed" 
+  },
+  inputError: { border: '1px solid #f48771' },
+  errorText: { color: '#f48771', fontSize: '13px', marginTop: '5px' },
+  errorBox: { 
+    margin: '15px', 
+    padding: '15px', 
+    backgroundColor: 'rgba(201, 78, 78, 0.1)', 
+    border: '1px solid #c94e4e', 
+    borderRadius: '8px', 
+    color: '#f48771' 
+  },
+  successBox: { 
+    padding: '15px', 
+    backgroundColor: 'rgba(40, 167, 69, 0.1)', 
+    border: '1px solid #28a745', 
+    borderRadius: '5px', 
+    color: '#5cb85c' 
+  },
+  loadingBox: { 
+    textAlign: 'center', 
+    padding: '40px 20px', 
+    color: '#a0a0a0' 
+  },
+
+  // --- Section & Card Styles ---
+  section: {
+    backgroundColor: '#252526',
+    margin: '15px',
+    borderRadius: '8px',
+    border: '1px solid #333',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+    overflow: 'hidden'
+  },
+  sectionHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '15px',
+    cursor: 'pointer',
+    backgroundColor: '#333333',
+    fontWeight: 'bold',
+    color: '#00aaff'
+  },
+  sectionHeaderCompleted: {
+    backgroundColor: '#333333',
+    color: '#888'
+  },
+  sectionContent: {
+    padding: '15px'
+  },
+  planCard: { 
+    position: 'relative', 
+    border: '1px solid #3c3c3c', 
+    padding: '15px', 
+    margin: '10px 0', 
+    borderRadius: '8px', 
+    backgroundColor: '#2a2a2a'
+  },
+  label: { 
+    fontWeight: 'bold', 
+    display: 'block', 
+    fontSize: '14px', 
+    marginBottom: '5px',
+    color: '#00aaff'
+  },
+  clarification: { 
+    fontStyle: 'italic', 
+    color: '#a0a0a0', 
+    background: '#2a2a2a', 
+    padding: '10px', 
+    borderRadius: '5px', 
+    border: '1px solid #3c3c3c' 
+  },
+  refinementBox: { 
+    marginTop: '25px', 
+    padding: '15px', 
+    border: '1px dashed #007acc', 
+    borderRadius: '8px', 
+    backgroundColor: 'rgba(0, 122, 204, 0.1)'
+  },
+
+  // --- Results & Report ---
+  articleList: { 
+    maxHeight: '40vh', 
+    overflowY: 'auto', 
+    border: '1px solid #333', 
+    padding: '5px', 
+    borderRadius: '5px',
+    backgroundColor: '#1e1e1e'
+  },
+  articleItem: { 
+    borderBottom: '1px solid #333', 
+    padding: '10px' 
+  },
+  articleTitle: { 
+    margin: 0, 
+    fontSize: '14px', 
+    fontWeight: 'bold',
+    color: '#9cdcfe'
+  },
+  articleMeta: { 
+    margin: '5px 0', 
+    fontSize: '12px', 
+    color: '#a0a0a0' 
+  },
+  articleDetails: { 
+    marginTop: '8px', 
+    fontSize: '12px', 
+    cursor: 'pointer',
+    color: '#00aaff'
+  },
+  articleAbstract: { 
+    margin: '5px 0', 
+    paddingLeft: '10px', 
+    borderLeft: '3px solid #007acc', 
+    color: '#b0b0b0', 
+    lineHeight: 1.5, 
+    whiteSpace: 'pre-wrap' 
+  },
+  reportContent: { 
+    marginTop: '20px', 
+    padding: '15px', 
+    backgroundColor: '#2a2a2a', 
+    borderRadius: '5px', 
+    border: '1px solid #3c3c3c', 
+    lineHeight: 1.6, 
+    whiteSpace: 'pre-wrap', 
+    fontFamily: "'Georgia', serif",
+    color: '#d4d4d4'
+  },
+  
+  // --- Details & Logs ---
+  details: {
+    marginBottom: '15px'
+  },
+  summary: {
+    cursor: 'pointer',
+    fontWeight: 'bold',
+    fontSize: '14px',
+    color: '#00aaff'
+  },
+  queryBox: { 
+    padding: '10px', 
+    marginTop: '10px', 
+    backgroundColor: '#2a2a2a', 
+    borderRadius: '4px', 
+    border: '1px solid #3c3c3c', 
+    wordBreak: 'break-all'
+  },
+  queryText: { 
+    margin: 0, 
+    fontSize: '13px', 
+    color: '#d4d4d4', 
+    whiteSpace: 'pre-wrap',
+    fontFamily: "'Courier New', Courier, monospace"
+  },
+  logDetails: {
+      margin: '15px',
+      padding: '10px',
+      backgroundColor: '#252526',
+      border: '1px solid #333',
+      borderRadius: '8px'
+  },
+  logSummary: {
+      cursor: 'pointer',
+      fontWeight: 'bold',
+      fontSize: '14px',
+      color: '#a0a0a0'
+  },
+  logContainer: {
+      maxHeight: '150px',
+      overflowY: 'auto',
+      marginTop: '10px',
+      padding: '10px',
+      backgroundColor: '#1e1e1e',
+      borderRadius: '4px',
+      borderLeft: '3px solid #007acc'
+  },
+  logEntry: {
+      margin: '0 0 5px 0',
+      fontSize: '12px',
+      color: '#a0a0a0',
+      whiteSpace: 'pre-wrap',
+      fontFamily: 'monospace',
+      lineHeight: '1.4'
+  },
+  inlineLoadingBox: {
+    textAlign: 'center',
+    padding: '20px',
+    color: '#a0a0a0',
+    backgroundColor: 'rgba(0, 122, 204, 0.1)',
+    borderRadius: '5px',
+    margin: '10px 0',
+    border: '1px dashed #007acc'
+  },
+  themeToggleButton: {
+    background: 'none',
+    border: '1px solid #3c3c3c',
+    borderRadius: '5px',
+    cursor: 'pointer',
+    fontSize: '18px',
+    padding: '4px 8px',
+    color: '#d4d4d4'
+  }
 };
 
 export default SidePanel;

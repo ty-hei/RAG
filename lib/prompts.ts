@@ -2,7 +2,6 @@
 
 import type { FetchedArticle, FetchedClinicalTrial, ResearchPlan, ScoredClinicalTrial, ScoredWebResult } from "./types";
 
-// 【变更】更新 researchStrategistPrompt 以生成专用的 webQuery
 export const researchStrategistPrompt = (topic: string): string => `
   You are a helpful and collaborative research strategist specializing in biomedical fields. Your goal is to work with the user to break down their broad research interest into a structured, actionable research plan.
 
@@ -218,72 +217,84 @@ export const webSearchReviewerPrompt = (plan: ResearchPlan, results: { url: stri
   ]
 `;
 
-export const synthesisWriterPrompt = (
+export const extractInsightsFromArticlePrompt = (
   plan: ResearchPlan,
-  fullTexts: { pmid: string; text: string }[],
-  clinicalTrials: ScoredClinicalTrial[],
-  webResults: ScoredWebResult[]
+  article: { pmid: string; text: string }
 ): string => `
-  You are a top-tier medical researcher and writer. Your task is to synthesize information from MULTIPLE sources (full-text articles, clinical trial summaries, and web results) into a comprehensive, structured, and insightful literature review.
+  You are a diligent and focused research assistant. Your task is to read a single scientific article and extract all information relevant to a predefined list of research sub-questions.
+
+  **The overall research plan is to understand:** ${plan.clarification}
+
+  **The article you must analyze is:**
+  <document pmid="${article.pmid}">
+    ${article.text}
+  </document>
+
+  **Your Task:**
+  For each of the sub-questions below, extract and synthesize the relevant information found ONLY within the provided article text.
+
+  **Sub-questions:**
+  ${plan.subQuestions.map(sq => `
+  <question id="${sq.id}">
+    ${sq.question}
+  </question>
+  `).join('\n')}
+
+  **CRITICAL INSTRUCTIONS:**
+  - Your output MUST be a single, valid JSON object.
+  - The keys of the JSON object must be the sub-question IDs (e.g., "sq_123").
+  - The value for each key must be a string containing the extracted information for that question.
+  - **Crucially, every piece of information must be followed by its citation [PMID:${article.pmid}].**
+  - If no relevant information is found for a specific sub-question, the value should be an empty string.
+  - Do not add any information that is not from the provided article.
+
+  **Example Output Structure:**
+  {
+    "sq_id_1": "The article states that HMGB1 is primarily nuclear in neurons [PMID:${article.pmid}]. It is released during ischemic injury [PMID:${article.pmid}].",
+    "sq_id_2": "RAGE and TLR4 are the main signaling pathways discussed [PMID:${article.pmid}].",
+    "sq_id_3": ""
+  }
+`;
+
+export const reduceSummariesToReportPrompt = (
+  plan: ResearchPlan,
+  summaries: { subQuestionId: string; question: string; summary: string }[]
+): string => `
+  You are a top-tier medical researcher and writer. Your task is to synthesize a collection of pre-digested summaries into a final, comprehensive, and insightful literature review. Each summary corresponds to a specific sub-question from the research plan.
 
   The research is guided by the following plan:
   - Main Topic/Clarification: "${plan.clarification}"
   - Key Sub-questions to address:
     ${plan.subQuestions.map((sq, i) => `${i + 1}. ${sq.question}`).join('\n    ')}
 
-  You have been provided with three types of information sources:
+  Here are the synthesized summaries for each sub-question. Each summary already contains the necessary citations.
 
-  1.  **Full-Text Articles (${fullTexts.length} documents):** These are the primary, in-depth academic sources.
-      ${fullTexts.map(doc => `
-      <document pmid="${doc.pmid}">
-        ${doc.text}
-      </document>
-      `).join('\n\n')}
-
-  2.  **Clinical Trials (${clinicalTrials.length} summaries):** These provide information on ongoing or completed studies, which can be used to discuss the latest research landscape and future directions.
-      ${clinicalTrials.map(trial => `
-      <trial nctId="${trial.nctId}">
-        <title>${trial.title}</title>
-        <status>${trial.status}</status>
-        <summary>${trial.summary}</summary>
-        <conditions>${trial.conditions.join(', ')}</conditions>
-        <interventions>${trial.interventions.join(', ')}</interventions>
-      </trial>
-      `).join('\n\n')}
-
-  3.  **Web Results (${webResults.length} snippets):** These can provide context from news, expert opinions, or guidelines that may not be in academic papers yet.
-      ${webResults.map(res => `
-      <web url="${res.url}">
-        <title>${res.title}</title>
-        <content>${res.content}</content>
-      </web>
-      `).join('\n\n')}
+  ${summaries.map(s => `
+  <summary for_question="${s.question}">
+    ${s.summary}
+  </summary>
+  `).join('\n\n')}
 
   **CRITICAL INSTRUCTIONS:**
-  Your final output MUST be a single, well-formatted Markdown document. Do not just summarize sources; you must intelligently INTEGRATE them. For example, when discussing a treatment mentioned in an article, you can cite a clinical trial that is currently testing it, or a news article that discusses its recent FDA approval.
+  Your final output MUST be a single, well-formatted Markdown document. Your main job is to structure, connect, and polish the provided summaries into a high-quality report.
 
   The report must be structured with the following sections:
 
-  1.  **核心见解摘要 (Executive Summary)**: A bulleted list of 3-5 key takeaways from the entire review, integrating all sources.
+  1.  **核心见解摘要 (Executive Summary)**: A bulleted list of 3-5 key takeaways from the entire review. You will need to create this by reading all the summaries.
 
   2.  **引言 (Introduction)**: Set the context for the research topic, state its importance, and outline the structure of this review.
 
-  3.  **方法论总览 (Methodology Overview)**: Briefly summarize the types of evidence used (e.g., "This review is based on X full-text articles, supplemented by Y clinical trial summaries and Z relevant web results...").
+  3.  **方法论总览 (Methodology Overview)**: Briefly state that this review is based on a systematic synthesis of information from academic literature, clinical trials, and web sources, which were mapped to specific research sub-questions.
 
-  4.  **分主题综合分析 (Synthesis by Sub-question)**: This is the main body. For each sub-question, synthesize findings from ALL RELEVANT sources.
-      - **Integrate, don't just list.** Weave together information from articles, trials, and web results to build a strong narrative.
-      - **Cite everything.** Every piece of information must be cited immediately.
+  4.  **分主题综合分析 (Synthesis by Sub-question)**: This is the main body. For each sub-question from the research plan, create a section. Use the corresponding summary text provided to you as the content for that section. You may need to add transition sentences to ensure a smooth flow between sections, but do NOT alter the core information or citations in the summaries.
 
-  5.  **研究局限性 (Limitations)**: Discuss the limitations of the current body of research, using evidence from all sources.
+  5.  **研究局限性 (Limitations)**: Based on the summaries, discuss the limitations of the current body of research. Look for summaries that state "No relevant information found" as a key indicator of a research gap.
 
-  6.  **结论与未来研究方向 (Conclusion and Future Directions)**: Summarize the main findings. Then, suggest specific future research directions, explicitly referencing ongoing clinical trials or gaps identified in web news.
+  6.  **结论与未来研究方向 (Conclusion and Future Directions)**: Summarize the main findings from the report. Then, suggest specific future research directions, explicitly referencing information from the summaries (e.g., ongoing clinical trials mentioned in the citations).
 
   **Formatting and Citation Style:**
   - Use Markdown headings (\`##\`) for each section title.
-  - Use the following MANDATORY inline citation formats:
-    - For academic papers: **[PMID:XXXXXX]**
-    - For clinical trials: **[TRIAL:NCTXXXXXX]**
-    - For web results: **[WEB:https://...]**
+  - The summaries already contain the correct citation formats: **[PMID:XXXXXX]**, **[TRIAL:NCTXXXXXX]**, and **[WEB:https://...]**. Ensure these are preserved perfectly in the final output.
 `;
 
 export const generateSearchQueriesPrompt = (plan: ResearchPlan): string => `
@@ -311,4 +322,4 @@ export const generateSearchQueriesPrompt = (plan: ResearchPlan): string => `
       "clinicalTrialQuery": "(metformin) AND (PCOS OR Polycystic Ovary Syndrome)",
       "webQuery": "metformin PCOS latest guidelines"
     }
-`;
+}`;

@@ -3,6 +3,7 @@
 import { Storage } from "@plasmohq/storage"
 import React, { useState, useEffect } from "react"
 import type { LLMConfig } from "./lib/types"
+import { useThemeStore } from "./lib/theme-store"
 
 const storage = new Storage({ area: "local" })
 
@@ -11,11 +12,10 @@ const defaultConfig: LLMConfig = {
   apiKey: "",
   apiEndpoint: "",
   fastModel: "gemini-1.5-flash",
-  smartModel: "gemini-2.0-flash",
+  smartModel: "gemini-1.5-pro",
   fetchRateLimit: 15,
   webSearchProvider: "none",
   tavilyApiKey: "",
-  // ✅ 【新增】初始化 Google 配置
   googleApiKey: "",
   googleCseId: "",
   ncbiApiKey: "",
@@ -24,6 +24,8 @@ const defaultConfig: LLMConfig = {
 function OptionsPage() {
   const [config, setConfig] = useState<LLMConfig>(defaultConfig)
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle")
+  const { theme } = useThemeStore();
+  const styles = theme === 'dark' ? darkStyles : lightStyles;
 
   useEffect(() => {
     const loadConfig = async () => {
@@ -60,9 +62,9 @@ function OptionsPage() {
 
   return (
     <div style={styles.container}>
-      <h1>PubMed RAG 智能助理 - 设置</h1>
+      <h1 style={{color: styles.label.color}}>PubMed RAG 智能助理 - 设置</h1>
       
-      <h2 style={{marginTop: '40px'}}>AI 模型设置</h2>
+      <h2 style={{marginTop: '40px', color: styles.label.color}}>AI 模型设置</h2>
       <p style={styles.description}>
         请在此处配置您的语言模型API密钥。您的数据将安全地存储在本地。
       </p>
@@ -87,6 +89,18 @@ function OptionsPage() {
           value={config.apiKey}
           onChange={(e) => handleConfigChange("apiKey", e.target.value)}
         />
+        {config.provider === 'gemini' && (
+            <details style={{marginTop: '10px'}}>
+                <summary style={{cursor: 'pointer', color: theme === 'dark' ? '#00aaff' : '#0056b3', fontSize: '12px'}}>如何获取 Gemini API 密钥？</summary>
+                <div style={{marginTop: '10px', padding: '15px', border: `1px solid ${theme === 'dark' ? '#3c3c3c' : '#eee'}`, borderRadius: '5px', backgroundColor: theme === 'dark' ? '#2a2a2a' : '#f8f9fa'}}>
+                    <ol style={{paddingLeft: '20px', margin: 0, lineHeight: 1.6}}>
+                        <li>访问 <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" style={{color: theme === 'dark' ? '#9cdcfe' : '#007bff'}}>Google AI Studio</a>。</li>
+                        <li>点击 "Create API key" (创建API密钥) 按钮。</li>
+                        <li>复制生成的密钥并粘贴到上方的输入框中。</li>
+                    </ol>
+                </div>
+            </details>
+        )}
       </div>
 
       {config.provider === "openai" && (
@@ -130,9 +144,9 @@ function OptionsPage() {
         </p>
       </div>
       
-      <hr style={{margin: '30px 0', border: 'none', borderTop: '1px solid #eee'}}/>
+      <hr style={{margin: '30px 0', border: 'none', borderTop: `1px solid ${theme === 'dark' ? '#333' : '#eee'}`}}/>
       
-      <h2>工作流设置</h2>
+      <h2 style={{color: styles.label.color}}>工作流设置</h2>
       
       <div style={styles.formGroup}>
         <label style={styles.label}>NCBI API Key (推荐)</label>
@@ -163,8 +177,8 @@ function OptionsPage() {
         </p>
       </div>
 
-      <hr style={{margin: '30px 0', border: 'none', borderTop: '1px solid #eee'}}/>
-      <h2>Web搜索设置</h2>
+      <hr style={{margin: '30px 0', border: 'none', borderTop: `1px solid ${theme === 'dark' ? '#333' : '#eee'}`}}/>
+      <h2 style={{color: styles.label.color}}>Web搜索设置</h2>
       <p style={styles.fieldDescription}>
         (可选) 启用Web搜索服务，可以用新闻、博客等信息丰富研究上下文。
       </p>
@@ -175,7 +189,6 @@ function OptionsPage() {
           onChange={(e) => handleConfigChange("webSearchProvider", e.target.value)}
           style={styles.input}>
           <option value="none">禁用</option>
-          {/* ✅ 【变更】增加 Google Search 选项 */}
           <option value="google">Google Search</option>
           <option value="tavily">Tavily AI</option>
         </select>
@@ -194,7 +207,6 @@ function OptionsPage() {
         </div>
       )}
 
-      {/* ✅ 【新增】Google Search 的配置输入框 */}
       {config.webSearchProvider === 'google' && (
         <>
           <div style={styles.formGroup}>
@@ -238,16 +250,16 @@ function OptionsPage() {
   )
 }
 
-const styles: { [key: string]: React.CSSProperties } = {
-  container: { maxWidth: 600, margin: "50px auto", padding: 20, fontFamily: "sans-serif" },
+const lightStyles: { [key: string]: React.CSSProperties } = {
+  container: { maxWidth: 700, margin: "50px auto", padding: 40, fontFamily: "sans-serif" },
   description: { color: "#555" },
   formGroup: { marginBottom: 20 },
-  label: { display: "block", marginBottom: 5, fontWeight: "bold" },
-  input: { width: "100%", padding: 8, boxSizing: "border-box" },
+  label: { display: "block", marginBottom: 5, fontWeight: "bold", color: '#000' },
+  input: { width: "100%", padding: 12, boxSizing: "border-box" },
   fieldDescription: { fontSize: 12, color: "#777", marginTop: 5 },
   button: {
     width: "100%",
-    padding: "10px 15px",
+    padding: "12px 15px",
     backgroundColor: "#007bff",
     color: "white",
     border: "none",
@@ -261,6 +273,64 @@ const styles: { [key: string]: React.CSSProperties } = {
     backgroundColor: "#aaa",
     cursor: "not-allowed"
   }
-}
+};
 
-export default OptionsPage
+const darkStyles: { [key: string]: React.CSSProperties } = {
+  container: { 
+    maxWidth: 700, 
+    margin: "50px auto", 
+    padding: 40, 
+    fontFamily: "'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif",
+    backgroundColor: '#1e1e1e',
+    color: '#d4d4d4',
+    borderRadius: '8px',
+    border: '1px solid #333'
+  },
+  description: { 
+    color: "#a0a0a0",
+    lineHeight: 1.6 
+  },
+  formGroup: { 
+    marginBottom: 25 
+  },
+  label: { 
+    display: "block", 
+    marginBottom: 8, 
+    fontWeight: "bold",
+    color: '#00aaff'
+  },
+  input: { 
+    width: "100%", 
+    padding: 12, 
+    boxSizing: "border-box",
+    backgroundColor: '#2a2a2a',
+    color: '#d4d4d4',
+    border: '1px solid #3c3c3c',
+    borderRadius: '4px',
+    fontSize: '14px'
+  },
+  fieldDescription: { 
+    fontSize: 12, 
+    color: "#888", 
+    marginTop: 8 
+  },
+  button: {
+    width: "100%",
+    padding: "12px 15px",
+    backgroundColor: "#007acc",
+    color: "white",
+    border: "none",
+    borderRadius: 5,
+    cursor: "pointer",
+    fontSize: 16,
+    fontWeight: 'bold',
+    transition: "background-color 0.2s, transform 0.1s"
+  },
+  buttonDisabled: {
+    backgroundColor: "#555",
+    color: '#999',
+    cursor: "not-allowed"
+  }
+};
+
+export default OptionsPage;

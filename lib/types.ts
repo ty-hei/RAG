@@ -68,6 +68,7 @@ export interface FetchedArticle {
 export interface ScoredArticle extends FetchedArticle {
   score: number;
   reason: string;
+  pmcid?: string; // <-- Add optional pmcid
 }
 
 export interface ResearchSession {
@@ -85,6 +86,8 @@ export interface ResearchSession {
   loadingMessage: string | null;
   articlesToFetch: ScoredArticle[];
   fullTexts: { pmid: string; text: string }[];
+  synthesisProgress?: { [subQuestionId: string]: string };
+  processedPmids?: string[];
   finalReport: string;
   loading: boolean;
   error: string | null;
