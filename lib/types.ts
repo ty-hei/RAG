@@ -26,24 +26,55 @@ export interface ScoredClinicalTrial extends FetchedClinicalTrial {
 export interface ScoredWebResult {
   url: string;
   title: string;
-  content: string; 
+  content: string;
   score: number;
   reason: string;
 }
 
-export interface LLMConfig {
+export interface LLMModelConfig {
+  id: string;
+  name: string;
   provider: 'gemini' | 'openai';
   apiKey: string;
   apiEndpoint?: string;
   fastModel: string;
   smartModel: string;
-  fetchRateLimit: number;
-  webSearchProvider: 'tavily' | 'google' | 'none';
+}
+
+export interface WebSearchConfig {
+  id: string;
+  name: string;
+  provider: 'tavily' | 'google' | 'none';
   tavilyApiKey?: string;
   googleApiKey?: string;
   googleCseId?: string;
-  ncbiApiKey?: string;
 }
+
+export interface NCBIConfig {
+  id: string;
+  name: string;
+  ncbiApiKey?: string;
+  fetchRateLimit: number;
+}
+
+// Runtime config used by background services (merged from active profiles)
+export interface RuntimeConfig extends Omit<LLMModelConfig, 'id' | 'name'>, Omit<WebSearchConfig, 'id' | 'name' | 'provider'>, Omit<NCBIConfig, 'id' | 'name'> {
+  webSearchProvider: 'tavily' | 'google' | 'none';
+}
+
+export interface SettingsState {
+  llmConfigs: LLMModelConfig[];
+  webSearchConfigs: WebSearchConfig[];
+  ncbiConfigs: NCBIConfig[];
+  activeLlmId: string | null;
+  activeWebSearchId: string | null;
+  activeNcbiId: string | null;
+}
+
+// Deprecated: Kept for migration purposes if needed, but we will migrate directly.
+// We can remove LLMConfig if we update all references.
+// For now, let's alias RuntimeConfig to LLMConfig to minimize refactoring churn in background.ts
+export type LLMConfig = RuntimeConfig;
 
 export interface SubQuestion {
   id: string;
@@ -63,6 +94,8 @@ export interface FetchedArticle {
   pmid: string;
   title: string;
   abstract: string;
+  doi?: string;
+  pmcid?: string;
 }
 
 export interface ScoredArticle extends FetchedArticle {
@@ -95,6 +128,7 @@ export interface ResearchSession {
   gatheringIndex: number;
   clinicalTrials: ScoredClinicalTrial[];
   lastFailedAction: { type: string; payload: any } | null;
+  streamingContent?: string; // New field for streaming raw content
 }
 
 export interface AppState {

@@ -303,9 +303,9 @@ export const generateSearchQueriesPrompt = (plan: ResearchPlan): string => `
   **Research Plan:**
   - Main Topic: "${plan.clarification}"
   - Sub-questions and their validated keywords:
-    ${plan.subQuestions.map((sq, i) => 
-      `${i + 1}. ${sq.question}\n     Keywords: ${sq.keywords.map(k => k.term).join(', ')}`
-    ).join('\n    ')}
+    ${plan.subQuestions.map((sq, i) =>
+  `${i + 1}. ${sq.question}\n     Keywords: ${sq.keywords.map(k => k.term).join(', ')}`
+).join('\n    ')}
 
   **Your Task:**
   1.  Analyze all sub-questions and their keywords to identify the core, overarching concepts.
@@ -322,4 +322,20 @@ export const generateSearchQueriesPrompt = (plan: ResearchPlan): string => `
       "clinicalTrialQuery": "(metformin) AND (PCOS OR Polycystic Ovary Syndrome)",
       "webQuery": "metformin PCOS latest guidelines"
     }
-}`;
+`;
+
+export const compressSummaryPrompt = (question: string, summary: string): string => `
+  You are a professional editor.Your task is to compress the following research summary while strictly preserving all key information and citations.
+
+  ** Research Question:** "${question}"
+
+  ** Original Summary:**
+    ${summary}
+
+  ** Instructions:**
+  1.  Condense the text to be more concise.
+  2. ** CRITICAL:** You MUST preserve all citations in the format[PMID:...]or[TRIAL:...]or[WEB:...]. Do not remove any citation.
+  3.  Ensure the summary still answers the research question.
+
+  Output ONLY the compressed summary text.
+`;

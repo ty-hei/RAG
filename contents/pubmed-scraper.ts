@@ -5,48 +5,93 @@
 (async () => {
   console.log("RAG PubMed Scraper: Content script injected.");
 
+  // Helper function to wait for an element to appear in the DOM
+  const waitForElement = (selector: string, timeout = 10000): Promise<Element> => {
+    return new Promise((resolve, reject) => {
+      const element = document.querySelector(selector);
+      if (element) {
+        resolve(element);
+        return;
+      }
+
+      const observer = new MutationObserver(() => {
+        const element = document.querySelector(selector);
+        if (element) {
+          observer.disconnect();
+          resolve(element);
+        }
+      });
+
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+      });
+
+      setTimeout(() => {
+        observer.disconnect();
+        reject(new Error(`Timeout waiting for element: ${selector}`));
+      }, timeout);
+    });
+  };
+
+
   try {
-    // 等待页面元素加载
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // Wait for the main results container to appear before scraping
+    // This is more reliable than a fixed timeout.
+    // I'm guessing 'div.search-results-chunk' is a container for results.
+    // If not, 'article.docsum-article' is another good candidate.
+    await waitForElement('article.docsum-article');
+    
+    // Add a small extra delay for content to populate within elements.
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     const articles = [];
-    // 选取所有文章的容器
-    const articleElements = document.querySelectorAll('article.full-docsum');
+    // The selector for article containers might have changed. 
+    // 'article.docsum-article' is a common pattern on PubMed.
+    const articleElements = document.querySelectorAll('article.docsum-article');
 
     console.log(`RAG PubMed Scraper: Found ${articleElements.length} articles.`);
 
+    if (articleElements.length === 0) {
+        console.warn("RAG PubMed Scraper: Found 0 articles. The page structure may have changed. Please check the selectors.");
+    }
+
     articleElements.forEach(articleEl => {
-      // ?. 可选链操作符确保在元素不存在时不会报错，而是返回undefined
       const pmidEl = articleEl.querySelector('.docsum-pmid');
       const titleEl = articleEl.querySelector('a.docsum-title');
-      const abstractEl = articleEl.querySelector('.full-abstract');
+      // The abstract class might have changed from .full-abstract to .docsum-abstract
+      const abstractEl = articleEl.querySelector('.docsum-abstract, .full-abstract');
 
       const pmid = pmidEl?.textContent?.trim();
       const title = titleEl?.textContent?.trim();
-      // 如果没有摘要，则提供一个默认值，以避免后续处理出错
       const abstract = abstractEl?.textContent?.trim() || "No abstract available.";
 
-      // 确保我们获得了必要的信息
       if (pmid && title) {
         articles.push({ pmid, title, abstract });
+      } else {
+        console.warn("RAG PubMed Scraper: Skipped an article due to missing pmid or title.", {
+            pmid: pmid || 'not found',
+            title: title || 'not found',
+            element: articleEl.innerHTML
+        });
       }
     });
 
-    // 后台脚本正在等待此消息
     chrome.runtime.sendMessage({
       type: "SCRAPED_SEARCH_RESULTS",
       payload: articles
     });
+
   } catch (error) {
+    console.error("RAG PubMed Scraper: Error during scraping.", error);
     chrome.runtime.sendMessage({
       type: "SCRAPING_FAILED",
       payload: {
-        error: error.message,
+        error: `Scraping failed: ${error.message}. The PubMed website structure may have changed.`,
         url: window.location.href,
       }
     });
   }
 })();
 
-// 导出空对象，使其成为可注入的脚本
 export {};
